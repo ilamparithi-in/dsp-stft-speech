@@ -1,0 +1,391 @@
+/*
+ * style.css — Engineering-grade UI for STFT Spectrogram Viewer
+ *
+ * Design rationale:
+ *   - Monospace font throughout: text reads like instrument readouts, not
+ *     prose. Engineers scanning parameters expect uniform character widths.
+ *   - No gradients, no shadows, no border-radius > 2px: visual noise that
+ *     provides no information is removed. Every pixel should convey state.
+ *   - Strict colour palette (#0f1115 bg / #1a1d23 panels / #e6e6e6 text):
+ *     matches the contrast ratios of tools like MATLAB and Audacity. The
+ *     eye adjusts to the dark background; bright UI chrome would cause
+ *     visual fatigue during long analysis sessions.
+ *   - Sidebar + main panel (Option A): controls remain visible at all times
+ *     without scrolling, and the spectrogram canvas gets the maximum
+ *     horizontal run.
+ */
+
+/* ── Reset ─────────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ── Base ──────────────────────────────────────────────────────────────── */
+html, body {
+  height: 100%;       /* needed so the app div can fill the full viewport */
+}
+
+body {
+  /* Monospace stack: Consolas (Windows), Menlo (macOS), monospace fallback.
+     This gives the interface the feel of a terminal / instrument display. */
+  font-family: Consolas, Menlo, "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  background: #0f1115;
+  color: #e6e6e6;
+  line-height: 1.4;
+}
+
+/* ── Two-pane application shell ────────────────────────────────────────── */
+/*
+ * #app fills the entire viewport using a simple CSS Grid:
+ *   - left column  (220px fixed): sidebar with all controls
+ *   - right column (1fr):         spectrogram main panel
+ *
+ * Using grid instead of flexbox here because the sidebar width needs to be
+ * absolutely fixed — we don't want it to grow or shrink when the canvas
+ * gets a lot of data.
+ */
+#app {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  grid-template-rows: 100vh;
+  height: 100vh;
+  overflow: hidden;   /* prevent page-level scrollbars; each pane scrolls independently */
+}
+
+/* ── Sidebar ───────────────────────────────────────────────────────────── */
+/*
+ * The sidebar is a vertical strip. A thin 1px right border acts as a
+ * physical separator — the same convention used by Audacity's toolbox.
+ * No box-shadow: shadows imply depth/layering, which is a UI metaphor
+ * for consumer products, not analysis tools.
+ */
+#sidebar {
+  background: #1a1d23;
+  border-right: 1px solid #2e3138;
+  display: flex;
+  flex-direction: column;
+  gap: 0;             /* sections manage their own spacing with padding */
+  overflow-y: auto;
+}
+
+/* Application title — compact, left-aligned, no decoration */
+.sidebar-title {
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid #2e3138;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.title-main {
+  font-size: 13px;
+  font-weight: bold;
+  color: #e6e6e6;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.title-sub {
+  font-size: 11px;
+  color: #6a6f7a;
+}
+
+/* Each logical group of controls */
+.sidebar-section {
+  padding: 8px 10px;
+  border-bottom: 1px solid #2e3138;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/*
+ * Section heading labels (INPUT, PARAMETERS …).
+ * All-caps, small, muted — matches the convention used in IDEs and
+ * oscilloscope menu systems.
+ */
+.section-label {
+  font-size: 10px;
+  color: #6a6f7a;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding-bottom: 2px;
+}
+
+/* Individual parameter field: label sits directly above its control */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.field-label {
+  font-size: 11px;
+  color: #9aa0ad;
+}
+
+/* ── File input ─────────────────────────────────────────────────────────── */
+/*
+ * We use a visible button that triggers the hidden native file input.
+ * This gives full CSS control without hiding accessibility — the native
+ * input is still in the DOM and receives focus via keyboard.
+ */
+#audioInput {
+  /* Hidden but accessible (not display:none which removes from tab order) */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* "Browse…" trigger button */
+.btn-file {
+  background: #252830;
+  color: #c8cdd6;
+  border: 1px solid #3a3f4a;
+  border-radius: 2px;
+  padding: 3px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.btn-file:hover {
+  background: #2e333d;
+  border-color: #5a8fff;
+}
+
+/* Filename display — truncates long paths with ellipsis */
+.file-name {
+  font-size: 11px;
+  color: #6a6f7a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;       /* allow flex child to shrink below content width */
+}
+
+.file-name.selected {
+  color: #c8cdd6;
+}
+
+/* ── Select inputs ──────────────────────────────────────────────────────── */
+/*
+ * Selects use a flat appearance: no border-radius, minimal padding.
+ * This matches the look of numeric spinboxes in MATLAB or LabVIEW — the
+ * control is clearly interactive but doesn't dominate the panel visually.
+ */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: #252830;
+  color: #e6e6e6;
+  border: 1px solid #3a3f4a;
+  border-radius: 2px;
+  padding: 3px 22px 3px 6px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+  /* Custom chevron drawn as a CSS background — avoids platform-native arrow
+     which looks inconsistent across OSes */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236a6f7a'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+  width: 100%;
+}
+
+select:focus {
+  border-color: #5a8fff;
+  outline: 1px solid #5a8fff;
+  outline-offset: 0;
+}
+
+/* ── Run button ─────────────────────────────────────────────────────────── */
+/*
+ * Full-width, flat, functional. No border-radius animation or colour
+ * transition — state is communicated via disabled/enabled only.
+ * The ▶ glyph immediately communicates "execute", like a transport control.
+ */
+#processBtn {
+  width: 100%;
+  background: #1e4a9a;
+  color: #e6e6e6;
+  border: 1px solid #2a5bbf;
+  border-radius: 2px;
+  padding: 6px 0;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: bold;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  text-align: center;
+}
+
+#processBtn:hover:not(:disabled) {
+  background: #2456b8;
+  border-color: #4a7fdf;
+}
+
+#processBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ── Status bar ─────────────────────────────────────────────────────────── */
+/*
+ * Status sits at the bottom of the sidebar (flex-grow pushes it down).
+ * It is a single-line readout — no card, no icon, no animation.
+ * Similar to the status strip at the bottom of an IDE.
+ */
+.status-bar {
+  margin-top: auto;   /* push to bottom of sidebar */
+  padding: 6px 10px;
+  border-top: 1px solid #2e3138;
+  font-size: 11px;
+  color: #5a8fff;
+  word-break: break-word;
+}
+
+.status-bar.hidden {
+  display: none;
+}
+
+.status-bar.error {
+  color: #e05252;
+  border-top-color: #6e2020;
+}
+
+/* ── Main panel ─────────────────────────────────────────────────────────── */
+/*
+ * The main panel gives all its space to the canvas wrapper.
+ * No padding around the canvas: every pixel of display area is reserved
+ * for signal data. Padding would reduce effective frequency/time resolution
+ * visible to the analyst.
+ */
+#mainPanel {
+  background: #0f1115;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Canvas wrapper fills the main panel completely */
+#canvasWrapper {
+  position: relative;
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Placeholder text shown before first render */
+#placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: #3a3f4a;
+  pointer-events: none;
+  letter-spacing: 0.04em;
+}
+
+#placeholder.hidden {
+  display: none;
+}
+
+/* The spectrogram canvas itself */
+#spectrogramCanvas {
+  display: block;
+  width: 100%;          /* CSS width = container width; canvas.width = data columns */
+  height: 100%;         /* CSS height fills the wrapper */
+  object-fit: fill;
+  image-rendering: pixelated;  /* no interpolation — preserve FFT bin boundaries */
+}
+
+/* ── Axis labels ─────────────────────────────────────────────────────────── */
+/*
+ * Axis labels are a thin strip at the bottom of the panel.
+ * They do not overlay the canvas — they sit below it in normal flow.
+ * This avoids obscuring any frequency/time data.
+ */
+.axis-labels {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 6px;
+  border-top: 1px solid #2e3138;
+  font-size: 10px;
+  color: #6a6f7a;
+  flex-shrink: 0;
+  letter-spacing: 0.04em;
+}
+
+.axis-labels.hidden {
+  display: none;
+}
+
+/* ── Responsive: mobile (single-column stacked layout) ─────────────────── */
+/*
+ * On narrow screens the sidebar stacks above the spectrogram.
+ * The sidebar becomes a horizontal scrollable strip so controls stay
+ * accessible without occupying vertical space from the canvas.
+ */
+@media (max-width: 640px) {
+  #app {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    height: auto;
+    min-height: 100vh;
+  }
+
+  #sidebar {
+    border-right: none;
+    border-bottom: 1px solid #2e3138;
+    flex-direction: row;
+    flex-wrap: wrap;
+    overflow-x: auto;
+    overflow-y: visible;
+  }
+
+  .sidebar-title {
+    width: 100%;
+    border-bottom: none;
+    border-right: 1px solid #2e3138;
+    padding: 6px 10px;
+  }
+
+  .sidebar-section {
+    border-bottom: none;
+    border-right: 1px solid #2e3138;
+    flex: 0 0 auto;
+    min-width: 140px;
+  }
+
+  .status-bar {
+    margin-top: 0;
+    border-top: none;
+    border-left: 1px solid #2e3138;
+    flex: 1 1 auto;
+    align-self: center;
+  }
+
+  #mainPanel {
+    min-height: 60vw;  /* give the canvas enough height to be readable on phones */
+  }
+}

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>STFT Spectrogram Viewer</title>
+
+  <!-- fft.js via CDN — FFT computation backend used in script.js -->
+  <script src="https://cdn.jsdelivr.net/npm/fft.js@4.0.4/lib/fft.js"></script>
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!--
+    Layout: sidebar (controls) + main panel (spectrogram).
+    This mirrors the two-pane convention used by tools like Audacity and MATLAB's
+    Signal Analyzer — controls are always visible without scrolling, and the
+    spectrogram occupies the maximum possible screen area.
+  -->
+  <div id="app">
+
+    <!-- ── Left sidebar: all STFT parameters and file controls ── -->
+    <aside id="sidebar">
+
+      <!-- Application title — compact, monospaced, no decoration -->
+      <div class="sidebar-title">
+        <span class="title-main">STFT Viewer</span>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-label">INPUT</div>
+
+        <!-- File selector: plain text label + native file input -->
+        <div class="field">
+          <label class="field-label" for="audioInput">Audio File</label>
+          <!-- Hidden native input; the visible button triggers it -->
+          <div class="file-row">
+            <button class="btn-file" id="fileBtn" type="button">Browse…</button>
+            <span id="fileNameDisplay" class="file-name">—</span>
+          </div>
+          <input type="file" id="audioInput" accept="audio/*" />
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-label">PARAMETERS</div>
+
+        <!-- Each parameter follows the same label-above-input grid pattern -->
+        <div class="field">
+          <label class="field-label" for="frameSize">Frame Size</label>
+          <select id="frameSize">
+            <option value="128">128</option>
+            <option value="256" selected>256</option>
+            <option value="512">512</option>
+            <option value="1024">1024</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="hopSize">Hop Size</label>
+          <select id="hopSize">
+            <option value="64">64</option>
+            <option value="128" selected>128</option>
+            <option value="256">256</option>
+            <option value="512">512</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="windowType">Window</label>
+          <select id="windowType">
+            <option value="hamming" selected>Hamming</option>
+            <option value="hann">Hann</option>
+            <option value="rectangular">Rectangular</option>
+            <option value="blackman">Blackman</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Run button — full width of sidebar, styled as a functional control -->
+      <div class="sidebar-section">
+        <button id="processBtn" disabled>&#9654; Run</button>
+      </div>
+
+      <!-- Status line at the bottom of the sidebar, not floating in the page -->
+      <div id="statusBar" class="status-bar hidden">
+        <span id="statusText"></span>
+      </div>
+
+    </aside>
+
+    <!-- ── Right main panel: spectrogram canvas fills all remaining space ── -->
+    <main id="mainPanel">
+
+      <!--
+        The canvas-wrapper uses position:relative so axis tick overlays can be
+        added later without reflowing the canvas itself.
+      -->
+      <div id="canvasWrapper">
+        <!-- Placeholder shown before first render -->
+        <div id="placeholder">No data — load a file and press Run</div>
+        <canvas id="spectrogramCanvas"></canvas>
+
+        <!-- Axis labels sit outside the canvas to avoid overpainting data -->
+        <div id="axisLabels" class="axis-labels hidden">
+          <span class="x-label">Time &#8594;</span>
+          <span class="y-label">Freq &#8594;</span>
+        </div>
+      </div>
+
+    </main>
+
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
