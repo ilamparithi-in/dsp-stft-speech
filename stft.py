@@ -97,15 +97,16 @@ def plot_spectrogram(X, fs, hop_size):
 	plt.show()
 
 
-fs = 2000
-duration = 1.0
-t = np.arange(int(fs * duration)) / fs
-x = np.sin(2 * np.pi * 100 * t) + np.sin(2 * np.pi * 300 * t)
+if __name__ == "__main__":
+    fs = 2000
+    duration = 1.0
+    t = np.arange(int(fs * duration)) / fs
+    x = np.sin(2 * np.pi * 100 * t) + np.sin(2 * np.pi * 300 * t)
 
-window_type = "hamming"
-frame_size = 256
-hop_size = 128
+    window_type = "hamming"
+    frame_size = 256
+    hop_size = 128
 
-X = stft(x, fs, window_type, frame_size, hop_size)
-print(X.shape)
-plot_spectrogram(X, fs, hop_size)
+    X = stft(x, fs, window_type, frame_size, hop_size)
+    print(X.shape)
+    plot_spectrogram(X, fs, hop_size)
