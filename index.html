@@ -5,8 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STFT Spectrogram Viewer</title>
 
+  <!-- module shim: fft.js uses CommonJS (module.exports). Without this,
+       the browser throws ReferenceError on that line and never assigns the
+       FFT prototype methods, so createComplexArray() would not exist. -->
+  <script>var module = { exports: {} };</script>
+
   <!-- fft.js via CDN — FFT computation backend used in script.js -->
   <script src="https://cdn.jsdelivr.net/npm/fft.js@4.0.4/lib/fft.js"></script>
+
+  <!-- expose the export as a global so script.js can reach it -->
+  <script>window.FFT = module.exports;</script>
 
   <link rel="stylesheet" href="style.css" />
 </head>

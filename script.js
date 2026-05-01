@@ -83,16 +83,19 @@ processBtn.addEventListener("click", async () => {
 
     showStatus("Computing STFT…", false);
 
-    // ── Step 2: STFT (deferred one frame so the status message paints) ──────
-    // Use setTimeout(0) to yield to the browser renderer before heavy work
+    // ── Step 2: STFT ─────────────────────────────────────────────────────────
+    // Yield first so the status label paints before the CPU-bound work starts.
     await yieldToUI();
     const powerMatrix = computeSTFT(monoSamples, CONFIG);
+
+    // ── Step 3: convert power → dB, normalize, clip ───────────────────────
+    const dbMatrix = computeSpectrogram(powerMatrix);
 
     showStatus("Rendering spectrogram…", false);
     await yieldToUI();
 
-    // ── Step 3: render ───────────────────────────────────────────────────────
-    renderSpectrogram(powerMatrix, canvas, ctx2d);
+    // ── Step 4: render ────────────────────────────────────────────────────
+    renderSpectrogram(dbMatrix, canvas, ctx2d);
 
     // Hide the placeholder text and show axis labels once data is painted
     placeholder.classList.add("hidden");
@@ -268,25 +271,27 @@ function computeSTFT(samples, cfg) {
   // fft.js instance — must be constructed with the exact FFT size
   const fftInstance = new FFT(frameSize);
 
-  // Pre-allocate the complex input buffer once and reuse it every frame
-  const complexInput = fftInstance.createComplexArray(); // length = 2 * frameSize
+  // Pre-allocate both complex buffers once outside the loop — avoids GC
+  // pressure on large files (thousands of frames × 2×frameSize floats each).
+  const complexInput = fftInstance.createComplexArray(); // interleaved [re,im, re,im, …]
+  const out          = fftInstance.createComplexArray(); // FFT output, same layout
 
   const powerMatrix = [];
 
   for (let pos = 0; pos + frameSize <= samples.length; pos += hopSize) {
-    // ── 1 & 2: window the frame ───────────────────────────────────────────
+    // ── 1 & 2: extract frame and apply window ─────────────────────────────
     // complexInput layout: [re0, im0, re1, im1, …]
+    // Imaginary parts are always 0 for a real-valued input signal.
     for (let n = 0; n < frameSize; n++) {
-      complexInput[2 * n]     = samples[pos + n] * window[n]; // real part
-      complexInput[2 * n + 1] = 0;                            // imaginary part = 0
+      complexInput[2 * n]     = samples[pos + n] * window[n]; // real × window
+      complexInput[2 * n + 1] = 0;                            // imag = 0
     }
 
     // ── 3: FFT ────────────────────────────────────────────────────────────
-    // fft.js transforms complexInput in-place; output is written to the same array.
-    const out = fftInstance.createComplexArray();
     fftInstance.transform(out, complexInput);
 
-    // ── 4: magnitude squared (power spectrum) ─────────────────────────────
+    // ── 4: magnitude squared (linear power) ───────────────────────────────
+    // Only positive frequencies: bins 0 … frameSize/2 (DC … Nyquist).
     const powerFrame = new Float32Array(numBins);
     for (let k = 0; k < numBins; k++) {
       const re = out[2 * k];
@@ -297,67 +302,106 @@ function computeSTFT(samples, cfg) {
     powerMatrix.push(powerFrame);
   }
 
-  return powerMatrix;  // [numFrames][numBins]
+  return powerMatrix;  // [numFrames][numBins]  — linear power, not yet in dB
 }
 
 // =============================================================================
-// 4. renderSpectrogram(powerMatrix, canvas, ctx)
+// 4. computeSpectrogram(powerMatrix) → dbMatrix[][]
 // =============================================================================
 /**
- * Paints the spectrogram onto the canvas.
+ * Converts a linear-power STFT matrix into a display-ready dB matrix.
  *
- * Coordinate convention (matches common spectrogram orientation):
- *   X-axis → time (left = 0, right = last frame)
- *   Y-axis → frequency (bottom = DC, top = Nyquist)
+ * Algorithm:
+ *   1. S_db[t][k] = 10 * log10(power[t][k] + 1e-12)
+ *      The 1e-12 floor prevents log(0) on silence.
  *
- * Color mapping:
- *   Power values are converted to dB, normalised to [0, 1], and mapped through
- *   a simple "inferno-like" colormap for readability.  The colormap function is
- *   isolated so it can be replaced without touching the rest of the rendering pipeline.
+ *   2. Normalize relative to the global maximum:
+ *      S_db = S_db - max(S_db)
+ *      After this step the loudest bin is 0 dB; all others are negative.
  *
- * @param {number[][]} powerMatrix
+ *   3. Clip to the dynamic-range floor DB_FLOOR (default −80 dB).
+ *      Bins quieter than the floor are all treated equally (displayed as black).
+ *      This is the standard approach used by MATLAB, Audacity, and librosa.
+ *
+ * @param {Float32Array[]} powerMatrix - Output of computeSTFT()
+ * @returns {Float32Array[]} dbMatrix  - Values in [DB_FLOOR, 0]
+ */
+function computeSpectrogram(powerMatrix) {
+  const DB_FLOOR = -80;    // dB below peak that maps to colormap minimum
+  const EPSILON  = 1e-12;  // prevents log10(0)
+
+  // ── Pass 1: compute dB values and track the global maximum ───────────────
+  let globalMaxDB = -Infinity;
+
+  const dbMatrix = powerMatrix.map((frame) => {
+    const dbFrame = new Float32Array(frame.length);
+    for (let k = 0; k < frame.length; k++) {
+      const db = 10 * Math.log10(frame[k] + EPSILON);
+      dbFrame[k] = db;
+      if (db > globalMaxDB) globalMaxDB = db;
+    }
+    return dbFrame;
+  });
+
+  // ── Pass 2: subtract max (→ peak = 0 dB) then clip to floor ─────────────
+  for (let t = 0; t < dbMatrix.length; t++) {
+    const frame = dbMatrix[t];
+    for (let k = 0; k < frame.length; k++) {
+      // Relative to peak: 0 dB = loudest bin, negative values = quieter
+      const relative = frame[k] - globalMaxDB;
+      // Clamp: anything below the floor is indistinguishable from silence
+      frame[k] = relative < DB_FLOOR ? DB_FLOOR : relative;
+    }
+  }
+
+  return dbMatrix;  // [numFrames][numBins], values ∈ [DB_FLOOR, 0]
+}
+
+// =============================================================================
+// 5. renderSpectrogram(dbMatrix, canvas, ctx)
+// =============================================================================
+/**
+ * Paints a pre-computed dB spectrogram matrix onto the canvas.
+ *
+ * Coordinate convention:
+ *   X-axis → time  (left = frame 0,  right = last frame)
+ *   Y-axis → freq  (bottom = DC bin, top = Nyquist bin)
+ *
+ * The dB values from computeSpectrogram() are in [DB_FLOOR, 0]; they are
+ * linearly rescaled to [0, 1] for the colormap:
+ *   norm = (db - DB_FLOOR) / (-DB_FLOOR)   →  0 = silence, 1 = peak
+ *
+ * Pixels are written via ImageData.putImageData() — significantly faster than
+ * per-pixel fillRect(), which matters on mobile with thousands of bins × frames.
+ *
+ * @param {Float32Array[]} dbMatrix - Output of computeSpectrogram()
  * @param {HTMLCanvasElement} canvas
  * @param {CanvasRenderingContext2D} ctx
  */
-function renderSpectrogram(powerMatrix, canvas, ctx) {
-  const numFrames = powerMatrix.length;
+function renderSpectrogram(dbMatrix, canvas, ctx) {
+  const numFrames = dbMatrix.length;
   if (numFrames === 0) return;
-  const numBins = powerMatrix[0].length;
+  const numBins = dbMatrix[0].length;
 
-  // Size canvas to exact data dimensions — CSS scales it to 100% width
+  const DB_FLOOR = -80;  // must match the value used in computeSpectrogram()
+
+  // Size the canvas to the exact data dimensions.
+  // CSS (width:100%) then scales this to fit the panel without blurring.
   canvas.width  = numFrames;
   canvas.height = numBins;
 
-  // ── Convert all power values to dB ────────────────────────────────────────
-  const EPSILON = 1e-10;   // prevent log(0)
-  let minDB =  Infinity;
-  let maxDB = -Infinity;
-
-  // Two-pass: first find the global dB range
-  const dbMatrix = powerMatrix.map((frame) =>
-    Array.from(frame).map((p) => {
-      const db = 10 * Math.log10(p + EPSILON);
-      if (db < minDB) minDB = db;
-      if (db > maxDB) maxDB = db;
-      return db;
-    })
-  );
-
-  const dbRange = maxDB - minDB || 1; // avoid divide-by-zero on silence
-
-  // ── Draw one pixel column per frame ───────────────────────────────────────
-  // ImageData is faster than fillRect for dense pixel-level writes
+  // ImageData: row-major RGBA buffer (row 0 = top of canvas)
   const imageData = ctx.createImageData(numFrames, numBins);
-  const data      = imageData.data; // RGBA, row-major (row 0 = top)
+  const data      = imageData.data;
 
   for (let t = 0; t < numFrames; t++) {
     for (let k = 0; k < numBins; k++) {
-      // Normalise dB value to [0, 1]
-      const norm = (dbMatrix[t][k] - minDB) / dbRange;
+      // Map dB ∈ [DB_FLOOR, 0] → norm ∈ [0, 1]
+      const norm = (dbMatrix[t][k] - DB_FLOOR) / (-DB_FLOOR);
 
-      // Y is flipped: bin 0 (DC) should appear at the bottom of the canvas
+      // Flip Y: bin 0 (DC) at bottom, Nyquist at top
       const row = numBins - 1 - k;
-      const idx = (row * numFrames + t) * 4;  // RGBA offset
+      const idx = (row * numFrames + t) * 4;
 
       const [r, g, b] = colormapInferno(norm);
       data[idx]     = r;

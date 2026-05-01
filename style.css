@@ -69,6 +69,8 @@ body {
   flex-direction: column;
   gap: 0;             /* sections manage their own spacing with padding */
   overflow-y: auto;
+  overflow-x: hidden; /* grid items are min-width:auto by default; clip horizontal overflow here */
+  min-width: 0;       /* allow the grid column to constrain this item */
 }
 
 /* Application title — compact, left-aligned, no decoration */
@@ -100,6 +102,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;   /* flex child: must opt out of min-width:auto to allow shrinking */
+  overflow: hidden;
 }
 
 /*
@@ -120,6 +124,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  min-width: 0;   /* flex child must declare this or it won't shrink below content size */
+  overflow: hidden;
 }
 
 .field-label {
@@ -147,6 +153,8 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;   /* allows the row itself to shrink inside its flex parent */
+  overflow: hidden;
 }
 
 /* "Browse…" trigger button */
@@ -343,8 +351,15 @@ select:focus {
 /* ── Responsive: mobile (single-column stacked layout) ─────────────────── */
 /*
  * On narrow screens the sidebar stacks above the spectrogram.
- * The sidebar becomes a horizontal scrollable strip so controls stay
- * accessible without occupying vertical space from the canvas.
+ *
+ * The previous horizontal-row layout caused select dropdowns to be clipped:
+ * native <select> menus render in a separate browser overlay layer, and when
+ * their parent has overflow:auto the browser clips the popup to that scroll
+ * container on some platforms.
+ *
+ * Stacking the sidebar vertically (flex-direction: column, the default)
+ * means the sidebar has no scroll container at all on mobile — it just
+ * expands to fit its content. Dropdowns open freely into the viewport.
  */
 @media (max-width: 640px) {
   #app {
@@ -354,35 +369,21 @@ select:focus {
     min-height: 100vh;
   }
 
+  /* Sidebar reverts to a plain vertical block — no flex-direction change,
+     no overflow on the container. Sections simply stack top-to-bottom. */
   #sidebar {
     border-right: none;
     border-bottom: 1px solid #2e3138;
-    flex-direction: row;
-    flex-wrap: wrap;
-    overflow-x: auto;
-    overflow-y: visible;
-  }
-
-  .sidebar-title {
-    width: 100%;
-    border-bottom: none;
-    border-right: 1px solid #2e3138;
-    padding: 6px 10px;
+    /* flex-direction stays 'column' (from the non-mobile rule) */
+    overflow: visible;  /* must NOT be hidden/auto — would clip dropdown menus */
   }
 
   .sidebar-section {
-    border-bottom: none;
-    border-right: 1px solid #2e3138;
-    flex: 0 0 auto;
-    min-width: 140px;
+    border-bottom: 1px solid #2e3138;
   }
 
   .status-bar {
     margin-top: 0;
-    border-top: none;
-    border-left: 1px solid #2e3138;
-    flex: 1 1 auto;
-    align-self: center;
   }
 
   #mainPanel {
