@@ -324,18 +324,119 @@ input[type="number"]:focus {
   border-top-color: #6e2020;
 }
 
-/* ── Main panel ─────────────────────────────────────────────────────────── */
+/* ── Sidebar collapse button ────────────────────────────────────────────── */
 /*
- * The main panel gives all its space to the canvas wrapper.
- * No padding around the canvas: every pixel of display area is reserved
- * for signal data. Padding would reduce effective frequency/time resolution
- * visible to the analyst.
+ * The collapse button sits at the far-right of the sidebar title bar.
+ * It has no border in rest state — just a muted glyph — so it doesn't
+ * compete visually with the title text.
+ */
+.btn-collapse {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: #6a6f7a;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 1px 5px;
+  margin-left: auto;    /* push to the right end of the flex title row */
+  line-height: 1;
+  letter-spacing: -1px;
+  flex-shrink: 0;
+}
+
+.btn-collapse:hover {
+  color: #5a8fff;
+  border-color: #3a3f4a;
+  background: #252830;
+}
+
+/* Section icon buttons — hidden in expanded mode; one per sidebar section.
+ * In collapsed mode they are the only visible element per section. */
+.section-icon-btn {
+  display: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: #9aa0ad;
+  font-size: 15px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 7px 0;
+  width: 100%;
+  text-align: center;
+  line-height: 1;
+}
+
+.section-icon-btn:hover {
+  color: #5a8fff;
+  border-color: #3a3f4a;
+  background: #252830;
+}
+
+/* ── Collapsed sidebar (desktop: narrow strip; mobile: thin top bar) ────── */
+/*
+ * A single class on #app drives the entire collapsed state.  On desktop the
+ * grid column shrinks so the spectrogram gains the released space immediately.
+ * The grid-template-columns override is intentionally kept inside a min-width
+ * media query so mobile (which uses a row layout) is not affected.
+ */
+@media (min-width: 641px) {
+  #app.sidebar-collapsed {
+    grid-template-columns: 44px 1fr;
+  }
+
+  #app.sidebar-collapsed #sidebar {
+    overflow: hidden;         /* clip the content that is now hidden */
+    align-items: center;
+  }
+}
+
+/* Hide all sidebar text content in collapsed mode (all viewport sizes) */
+#app.sidebar-collapsed .title-main,
+#app.sidebar-collapsed .title-sub,
+#app.sidebar-collapsed .section-label,
+#app.sidebar-collapsed .field,
+#app.sidebar-collapsed #processBtn,
+#app.sidebar-collapsed #playBtn,
+#app.sidebar-collapsed .status-bar {
+  display: none;
+}
+
+/* Show the icon buttons */
+#app.sidebar-collapsed .section-icon-btn {
+  display: block;
+}
+
+/* Sidebar title when collapsed: center the toggle button */
+#app.sidebar-collapsed .sidebar-title {
+  justify-content: center;
+  padding: 8px 0;
+}
+
+#app.sidebar-collapsed .btn-collapse {
+  margin-left: 0;
+}
+
+/* Each collapsed section is a centered icon cell */
+#app.sidebar-collapsed .sidebar-section {
+  padding: 2px 0;
+  align-items: center;
+  justify-content: center;
+}
+
+/*
+ * Padding gives the spectrogram visual breathing room from the viewport edge.
+ * min-height:0 is required so the grid item can shrink below auto-size in
+ * a fixed-height grid (prevents the panel from overflowing 100vh).
  */
 #mainPanel {
   background: #0f1115;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 0;
+  padding: 8px 10px;
 }
 
 /* Canvas wrapper fills the main panel completely */
@@ -377,7 +478,7 @@ input[type="number"]:focus {
 /*
  * Cursor overlay canvas.
  * Absolutely positioned over the spectrogram so it doesn't affect layout.
- * pointer-events: none keeps all mouse/touch events on the spectrogram below.
+ * pointer-events: none keeps all mouse/touch events on the zoom canvas below.
  * width/height attributes are set in JS on each draw to match clientWidth/Height.
  */
 #cursorCanvas {
@@ -387,27 +488,111 @@ input[type="number"]:focus {
   width: 100%;
   height: 100%;
   pointer-events: none;
+  z-index: 3;
 }
 
-/* ── Axis labels ─────────────────────────────────────────────────────────── */
-/*
- * Axis labels are a thin strip at the bottom of the panel.
- * They do not overlay the canvas — they sit below it in normal flow.
- * This avoids obscuring any frequency/time data.
- */
-.axis-labels {
-  display: flex;
-  justify-content: space-between;
-  padding: 2px 6px;
-  border-top: 1px solid #2e3138;
-  font-size: 10px;
-  color: #6a6f7a;
-  flex-shrink: 0;
-  letter-spacing: 0.04em;
+/* Zoom selection overlay: sits between spectrogram and cursor.
+ * cursor:crosshair signals to the user that drag-to-zoom is active. */
+#zoomCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  z-index: 2;
 }
 
-.axis-labels.hidden {
+/* Reset-zoom floating button — visible only when zoomed in */
+.btn-reset-zoom {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 10;
+  background: rgba(26, 29, 35, 0.88);
+  color: #9aa0ad;
+  border: 1px solid #3a3f4a;
+  border-radius: 2px;
+  padding: 3px 8px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.btn-reset-zoom:hover {
+  color: #5a8fff;
+  border-color: #5a8fff;
+}
+
+.btn-reset-zoom.hidden {
   display: none;
+}
+
+/* ── spectroGrid — four-panel grid around the spectrogram ──────────────── */
+/*
+ * The grid carves the canvas wrapper into:
+ *   columns: [y-axis 60px] [spectrogram 1fr] [colorbar 58px]
+ *   rows:    [main 1fr]    [x-axis 36px]
+ *
+ * This is the minimal structure needed for calibrated axes without reducing
+ * the spectrogram's usable pixel area (axes live in separate grid cells).
+ */
+#spectroGrid {
+  display: grid;
+  grid-template-columns: 60px 1fr 58px;
+  grid-template-rows: 1fr 36px;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+#spectroGrid.hidden {
+  display: none;
+}
+
+/* Explicit grid placement for each panel */
+#yAxisCanvas  { grid-column: 1; grid-row: 1; }
+#spectroArea  { grid-column: 2; grid-row: 1; }
+#colorbarArea { grid-column: 3; grid-row: 1; }
+#xAxisCanvas  { grid-column: 2; grid-row: 2; }
+
+/* Spectrogram cell: relative positioning for the absolute cursor overlay */
+#spectroArea {
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Colorbar cell */
+#colorbarArea {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-left: 1px solid #2e3138;
+}
+
+#colorbarCanvas {
+  display: block;
+  width: 100%;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* Axis canvases fill their grid cells */
+#yAxisCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-right: 1px solid #2e3138;
+}
+
+#xAxisCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-top: 1px solid #2e3138;
 }
 
 /* ── Responsive: mobile (single-column stacked layout) ─────────────────── */
@@ -424,23 +609,35 @@ input[type="number"]:focus {
  * expands to fit its content. Dropdowns open freely into the viewport.
  */
 @media (max-width: 640px) {
+  /*
+   * Natural scrolling layout on mobile: the page is taller than the viewport
+   * and scrolls like a normal document.  #app stacks sidebar above main panel.
+   * #mainPanel has an explicit height so #canvasWrapper / #spectroGrid
+   * (which use flex:1) have a definite parent dimension to size against.
+   * 75vw gives a roughly square spectrogram on portrait phones; the 320px
+   * floor keeps it usable on very narrow screens.
+   */
   #app {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto auto;
     height: auto;
-    min-height: 100vh;
+    min-height: unset;
+    overflow: visible;
   }
 
-  /* Sidebar reverts to a plain vertical block — no flex-direction change,
-     no overflow on the container. Sections simply stack top-to-bottom. */
   #sidebar {
     border-right: none;
     border-bottom: 1px solid #2e3138;
-    /* flex-direction stays 'column' (from the non-mobile rule) */
-    overflow: visible;  /* must NOT be hidden/auto — would clip dropdown menus */
+    overflow-y: visible;  /* let content expand; page scroll handles overflow */
+    overflow-x: hidden;
   }
 
+  /*
+   * Override the desktop overflow:hidden on .sidebar-section so input-field
+   * boxes are never clipped mid-element.
+   */
   .sidebar-section {
+    overflow: visible;
     border-bottom: 1px solid #2e3138;
   }
 
@@ -449,6 +646,41 @@ input[type="number"]:focus {
   }
 
   #mainPanel {
-    min-height: 60vw;  /* give the canvas enough height to be readable on phones */
+    height: max(320px, 75vw);
+    min-height: unset;
+    overflow: hidden;  /* the spectrogram itself must not overflow its box */
+  }
+
+  /* Mobile collapsed: convert the sidebar to a compact horizontal icon bar */
+  #app.sidebar-collapsed #sidebar {
+    flex-direction: row;
+    justify-content: center;
+    align-items: stretch;
+    overflow: hidden;
+    max-height: none;
+    border-bottom: 1px solid #2e3138;
+  }
+
+  #app.sidebar-collapsed .sidebar-title {
+    border-bottom: none;
+    border-right: 1px solid #2e3138;
+    padding: 0 8px;
+    justify-content: center;
+    align-items: center;
+    flex-direction: row;
+  }
+
+  #app.sidebar-collapsed .sidebar-section {
+    border-bottom: none;
+    border-right: 1px solid #2e3138;
+    padding: 4px 2px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  #app.sidebar-collapsed .section-icon-btn {
+    padding: 8px 10px;
   }
 }

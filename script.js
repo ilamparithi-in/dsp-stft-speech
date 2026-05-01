@@ -46,17 +46,37 @@ const statusBar       = document.getElementById("statusBar");
 const statusText      = document.getElementById("statusText");
 const canvas          = document.getElementById("spectrogramCanvas");
 const cursorCanvas    = document.getElementById("cursorCanvas");   // cursor overlay
+const zoomCanvas      = document.getElementById("zoomCanvas");     // zoom rectangle overlay
+// Grid panels — spectroGrid is hidden until first render
+const spectroGrid     = document.getElementById("spectroGrid");
+const spectroArea     = document.getElementById("spectroArea");    // spectrogram cell
+const xAxisCanvas     = document.getElementById("xAxisCanvas");
+const yAxisCanvas     = document.getElementById("yAxisCanvas");
+const colorbarCanvas  = document.getElementById("colorbarCanvas");
 const canvasWrapper   = document.getElementById("canvasWrapper");
-const axisLabels      = document.getElementById("axisLabels");
 const placeholder     = document.getElementById("placeholder");
+const sidebarToggle   = document.getElementById("sidebarToggle");  // collapse button
+const resetZoomBtn    = document.getElementById("resetZoomBtn");   // zoom reset button
+const appEl           = document.getElementById("app");            // root grid element
 const ctx2d           = canvas.getContext("2d");
 const cursorCtx       = cursorCanvas.getContext("2d");
+const zoomCtx         = zoomCanvas.getContext("2d");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Audio decode state
 // ─────────────────────────────────────────────────────────────────────────────
 let monoSamples = null;
 let sampleRate  = 0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Zoom / view state
+// fullDbMatrix  — the complete dB matrix from the last Run; retained so that
+//                 zoom can re-render any sub-region without re-running STFT.
+// viewState     — currently displayed sub-region in frame / bin index space.
+//                 null until first successful render.
+// ─────────────────────────────────────────────────────────────────────────────
+let fullDbMatrix = null;
+let viewState    = null;  // { frameStart, frameEnd, binStart, binEnd }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Playback state
@@ -78,6 +98,78 @@ let isPlaying      = false;
 let rafId          = null;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Sidebar collapse / expand
+// ─────────────────────────────────────────────────────────────────────────────
+// Returns the right glyph pair for the collapse/expand toggle.
+// Desktop: « (expanded) / » (collapsed) — pointing left/right toward the sidebar.
+// Mobile:  ▲ (expanded) / ▼ (collapsed) — pointing up/down along the stacked layout.
+function sidebarGlyph(isCollapsed) {
+  const mobile = window.matchMedia("(max-width: 640px)").matches;
+  if (mobile) return isCollapsed ? "\u25BC" : "\u25B2";  // ▼ / ▲
+  return isCollapsed ? "\xBB" : "\xAB";  // » / «
+}
+
+function applySidebarGlyph(isCollapsed) {
+  sidebarToggle.textContent = sidebarGlyph(isCollapsed);
+  sidebarToggle.title = isCollapsed ? "Expand sidebar" : "Collapse sidebar";
+}
+
+function expandSidebar() {
+  appEl.classList.remove("sidebar-collapsed");
+  applySidebarGlyph(false);
+}
+
+sidebarToggle.addEventListener("click", () => {
+  const isCollapsed = appEl.classList.toggle("sidebar-collapsed");
+  applySidebarGlyph(isCollapsed);
+});
+
+// Update glyph when orientation/resize crosses the 640px breakpoint
+window.addEventListener("resize", () => {
+  applySidebarGlyph(appEl.classList.contains("sidebar-collapsed"));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ResizeObserver — re-render axes whenever the spectrogram grid changes size
+//
+// The axis canvases read clientWidth/clientHeight at render time.  Without
+// this observer, collapsing the sidebar or rotating the device changes the
+// available layout space but the axes keep their stale pixel dimensions,
+// making ticks stretch or compress instead of reflow.
+// A 60 ms debounce avoids re-rendering during every frame of a CSS transition.
+// ─────────────────────────────────────────────────────────────────────────────
+let resizeRafId = null;
+const gridResizeObserver = new ResizeObserver(() => {
+  if (!fullDbMatrix) return;  // nothing rendered yet
+  // Cancel any pending frame — we only need one re-render at the end
+  // of a batch of resize events.
+  if (resizeRafId !== null) cancelAnimationFrame(resizeRafId);
+  // requestAnimationFrame fires after the next complete layout pass,
+  // ensuring getBoundingClientRect() in renderAxes reads settled sizes.
+  resizeRafId = requestAnimationFrame(() => {
+    resizeRafId = null;
+    renderCurrentView();
+    renderColorbar();
+  });
+});
+gridResizeObserver.observe(spectroGrid);
+
+document.querySelectorAll(".section-icon-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const action = btn.dataset.action;
+    if (action === "run") {
+      if (!processBtn.disabled) { processBtn.click(); }
+      else { expandSidebar(); }
+    } else if (action === "play") {
+      if (!playBtn.disabled) { playBtn.click(); }
+      else { expandSidebar(); }
+    } else {
+      expandSidebar();
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Event wiring
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -97,7 +189,7 @@ audioInput.addEventListener("change", () => {
   playbackBuffer = null;
   hideStatus();
   clearCanvas();
-  axisLabels.classList.add("hidden");
+  spectroGrid.classList.add("hidden");
   placeholder.classList.remove("hidden");
 });
 
@@ -161,9 +253,25 @@ processBtn.addEventListener("click", async () => {
     // ── Step 5: render ────────────────────────────────────────────────────
     renderSpectrogram(dbMatrix, canvas, ctx2d);
 
-    // Hide the placeholder text and show axis labels once data is painted
+    // Show the spectroGrid (reveals axes, colorbar, spectrogram) now that
+    // data is painted.  Axes canvases must be visible before clientWidth is
+    // read, otherwise they report 0 dimensions.
     placeholder.classList.add("hidden");
-    axisLabels.classList.remove("hidden");
+    spectroGrid.classList.remove("hidden");
+
+    // Store the full result so zoom can re-render any sub-region.
+    fullDbMatrix = dbMatrix;
+    const numFrames = dbMatrix.length;
+    const numBins   = CONFIG.frameSize / 2 + 1;
+    viewState = { frameStart: 0, frameEnd: numFrames, binStart: 0, binEnd: numBins };
+    resetZoomBtn.classList.add("hidden");
+
+    // Draw calibrated axes and colorbar now that the grid is laid out.
+    const tEnd    = CONFIG.startTime + (numFrames * CONFIG.hopSize) / sampleRate;
+    const nyquist = sampleRate / 2;
+    renderAxes(CONFIG.startTime, tEnd, 0, nyquist);
+    renderColorbar();
+
     // Enable playback now that we have a rendered spectrogram and playbackBuffer
     playBtn.disabled = false;
     hideStatus();
@@ -573,6 +681,415 @@ function renderSpectrogram(dbMatrix, canvas, ctx) {
 }
 
 // =============================================================================
+// 5b. renderAxes(tStart, tEnd, fMin, fMax)
+// =============================================================================
+/**
+ * Draws calibrated tick marks and labels on the X and Y axis canvases.
+ *
+ * tStart / tEnd : absolute seconds visible in the current view
+ * fMin  / fMax  : Hz range visible in the current view
+ *
+ * Passing the range explicitly lets renderAxes serve both the initial full
+ * view and any zoomed sub-region without needing to know about CONFIG.
+ */
+function renderAxes(tStart, tEnd, fMin, fMax) {
+  // getBoundingClientRect() forces a synchronous layout flush and returns the
+  // actual rendered box dimensions.  This is critical here because
+  // renderSpectrogram() just changed canvas.width/height (resetting the
+  // canvas's intrinsic size), which can transiently affect clientWidth reads
+  // on sibling/ancestor elements in the same grid before the browser settles
+  // the layout.  getBoundingClientRect() bypasses that race entirely.
+  const areaRect = spectroArea.getBoundingClientRect();
+  const areaW    = Math.round(areaRect.width);
+  const areaH    = Math.round(areaRect.height);
+  if (areaW === 0 || areaH === 0) return;  // grid not yet laid out
+
+  const xAxisH = Math.round(xAxisCanvas.getBoundingClientRect().height) || 36;
+  const yAxisW = Math.round(yAxisCanvas.getBoundingClientRect().width)  || 60;
+
+  // ── X-axis (time) ─────────────────────────────────────────────────────────
+  xAxisCanvas.width  = areaW;
+  xAxisCanvas.height = xAxisH;
+  const xCtx = xAxisCanvas.getContext("2d");
+  xCtx.clearRect(0, 0, areaW, xAxisH);
+
+  if (areaW > 0 && xAxisH > 0) {
+    const xTicks = niceTicks(tStart, tEnd, 10);
+    xCtx.font         = "10px Consolas, Menlo, monospace";
+    xCtx.lineWidth    = 1;
+    xCtx.textBaseline = "top";
+
+    for (const t of xTicks) {
+      if (t < tStart - 1e-9 || t > tEnd + 1e-9) continue;
+      const x = ((t - tStart) / (tEnd - tStart)) * areaW;
+      xCtx.strokeStyle = "#3a3f4a";
+      xCtx.beginPath();
+      xCtx.moveTo(x, 0);
+      xCtx.lineTo(x, 5);
+      xCtx.stroke();
+      xCtx.fillStyle = "#6a6f7a";
+      xCtx.textAlign = "center";
+      xCtx.fillText(formatTime(t), x, 7);
+    }
+
+    xCtx.fillStyle = "#9aa0ad";
+    xCtx.textAlign = "right";
+    xCtx.fillText("Time (s)", areaW - 1, 7);
+  }
+
+  // ── Y-axis (frequency) ────────────────────────────────────────────────────
+  yAxisCanvas.width  = yAxisW;
+  yAxisCanvas.height = areaH;
+  const yCtx = yAxisCanvas.getContext("2d");
+  yCtx.clearRect(0, 0, yAxisW, areaH);
+
+  if (yAxisW > 0 && areaH > 0) {
+    const yTicks = niceTicks(fMin, fMax, 10);
+    yCtx.font      = "10px Consolas, Menlo, monospace";
+    yCtx.lineWidth = 1;
+    yCtx.textAlign = "right";
+
+    for (const f of yTicks) {
+      if (f < fMin - 1e-9 || f > fMax + 1e-9) continue;
+      // fMin = bottom of canvas, fMax = top
+      const y = (1 - (f - fMin) / (fMax - fMin)) * areaH;
+      yCtx.strokeStyle = "#3a3f4a";
+      yCtx.beginPath();
+      yCtx.moveTo(yAxisW - 4, y);
+      yCtx.lineTo(yAxisW,     y);
+      yCtx.stroke();
+      yCtx.fillStyle    = "#6a6f7a";
+      yCtx.textBaseline = "middle";
+      yCtx.fillText(formatFreq(f), yAxisW - 6, y);
+    }
+
+    yCtx.save();
+    yCtx.translate(10, areaH / 2);
+    yCtx.rotate(-Math.PI / 2);
+    yCtx.textAlign    = "center";
+    yCtx.textBaseline = "top";
+    yCtx.font         = "9px Consolas, Menlo, monospace";
+    yCtx.fillStyle    = "#9aa0ad";
+    yCtx.fillText("Frequency (Hz)", 0, 0);
+    yCtx.restore();
+  }
+}
+
+// =============================================================================
+// 5c. renderColorbar()
+// =============================================================================
+/**
+ * Draws a vertical color scale legend on the colorbar canvas.
+ *
+ * dB normalization (matching computeSpectrogram):
+ *   S_db = 10 * log10(power + 1e-12)
+ *   S_db = S_db − max(S_db)    →  peak bin = 0 dB
+ *   vmin = −80 dB, vmax = 0 dB
+ *
+ * The bar maps: top = 0 dB (colormap norm = 1), bottom = −80 dB (norm = 0).
+ * The same colormapInferno() function is used for pixel-accurate consistency.
+ */
+function renderColorbar() {
+  colorbarCanvas.width  = colorbarCanvas.clientWidth;
+  colorbarCanvas.height = colorbarCanvas.clientHeight;
+  const cbCtx = colorbarCanvas.getContext("2d");
+  cbCtx.clearRect(0, 0, colorbarCanvas.width, colorbarCanvas.height);
+
+  if (colorbarCanvas.width === 0 || colorbarCanvas.height === 0) return;
+
+  const DB_MIN = -80;
+  const DB_MAX =   0;
+
+  // Geometry: narrow bar on the left, tick labels on the right
+  const barX   = 4;
+  const barW   = 12;
+  const barTop = 18;                               // space for "dB" title
+  const barBot = colorbarCanvas.height - 6;
+  const barH   = barBot - barTop;
+
+  // Title "dB" above the bar
+  cbCtx.font         = "9px Consolas, Menlo, monospace";
+  cbCtx.fillStyle    = "#9aa0ad";
+  cbCtx.textAlign    = "center";
+  cbCtx.textBaseline = "top";
+  cbCtx.fillText("dB", barX + barW / 2, 3);
+
+  // Draw the colored bar row-by-row using colormapInferno.
+  // Top row = 0 dB (norm = 1), bottom row = −80 dB (norm = 0).
+  const imgData = cbCtx.createImageData(barW, barH);
+  for (let row = 0; row < barH; row++) {
+    const norm = 1 - row / (barH - 1);
+    const [r, g, b] = colormapInferno(norm);
+    for (let col = 0; col < barW; col++) {
+      const idx = (row * barW + col) * 4;
+      imgData.data[idx]     = r;
+      imgData.data[idx + 1] = g;
+      imgData.data[idx + 2] = b;
+      imgData.data[idx + 3] = 255;
+    }
+  }
+  cbCtx.putImageData(imgData, barX, barTop);
+
+  // Thin border around the bar
+  cbCtx.strokeStyle = "#3a3f4a";
+  cbCtx.lineWidth   = 1;
+  cbCtx.strokeRect(barX, barTop, barW, barH);
+
+  // Tick marks and numeric labels on the right side of the bar
+  const dbTicks = [0, -20, -40, -60, -80];
+  cbCtx.font         = "9px Consolas, Menlo, monospace";
+  cbCtx.fillStyle    = "#6a6f7a";
+  cbCtx.strokeStyle  = "#6a6f7a";
+  cbCtx.lineWidth    = 1;
+  cbCtx.textAlign    = "left";
+  cbCtx.textBaseline = "middle";
+
+  for (const db of dbTicks) {
+    // dB-to-pixel: 0 dB at top, −80 dB at bottom
+    const norm = (db - DB_MIN) / (DB_MAX - DB_MIN);  // 0 at -80, 1 at 0
+    const y    = barTop + (1 - norm) * barH;
+    // Short tick mark
+    cbCtx.beginPath();
+    cbCtx.moveTo(barX + barW,     y);
+    cbCtx.lineTo(barX + barW + 3, y);
+    cbCtx.stroke();
+    // Label
+    cbCtx.fillText(`${db}`, barX + barW + 5, y);
+  }
+}
+
+// =============================================================================
+// 5d. niceTicks / formatFreq / formatTime — axis helper utilities
+// =============================================================================
+/**
+ * Returns a list of "nice" round tick values covering [min, max].
+ * Step is rounded to 1, 2, or 5 × power-of-10 for human readability.
+ *
+ * @param {number} min
+ * @param {number} max
+ * @param {number} targetCount - Approximate desired number of ticks
+ * @returns {number[]}
+ */
+function niceTicks(min, max, targetCount) {
+  const range = max - min;
+  if (range === 0) return [min];
+  const roughStep  = range / targetCount;
+  const magnitude  = Math.pow(10, Math.floor(Math.log10(roughStep)));
+  const normalized = roughStep / magnitude;
+  let niceStep;
+  if      (normalized < 1.5) niceStep =  1 * magnitude;
+  else if (normalized < 3.5) niceStep =  2 * magnitude;
+  else if (normalized < 7.5) niceStep =  5 * magnitude;
+  else                        niceStep = 10 * magnitude;
+  const start = Math.ceil(min / niceStep) * niceStep;
+  const ticks  = [];
+  for (let v = start; v <= max + niceStep * 1e-6; v += niceStep) {
+    ticks.push(Math.round(v / niceStep) * niceStep);
+  }
+  return ticks;
+}
+
+/**
+ * Formats a frequency value (Hz) for Y-axis labels.
+ * Values ≥ 1000 Hz are rendered as kHz (e.g. "11k", "5.5k").
+ */
+function formatFreq(f) {
+  if (f === 0) return "0";
+  if (f >= 1000) {
+    const k = f / 1000;
+    return (k % 1 === 0 ? k.toFixed(0) : k.toFixed(1)) + "k";
+  }
+  return f.toFixed(0);
+}
+
+/**
+ * Formats a time value (seconds) for X-axis labels.
+ * Uses the minimum number of decimal places to distinguish adjacent ticks.
+ */
+function formatTime(t) {
+  if (t === 0) return "0";
+  if (t >= 10)  return t.toFixed(0);
+  if (t >= 1)   return t.toFixed(1);
+  return t.toFixed(2);
+}
+
+// =============================================================================
+// renderCurrentView — re-render the spectrogram for the current viewState
+// =============================================================================
+/**
+ * Re-renders the spectrogram canvas and axes for whatever sub-region
+ * viewState describes.  Called both after initial render (full view) and
+ * after every zoom/reset.
+ */
+function renderCurrentView() {
+  if (!fullDbMatrix || !viewState) return;
+
+  const { frameStart, frameEnd, binStart, binEnd } = viewState;
+
+  // Build a sub-matrix that covers only the visible frames/bins.
+  const subMatrix = [];
+  for (let t = frameStart; t < frameEnd; t++) {
+    subMatrix.push(fullDbMatrix[t].slice(binStart, binEnd));
+  }
+
+  renderSpectrogram(subMatrix, canvas, ctx2d);
+
+  const fs         = sampleRate;
+  const tViewStart = CONFIG.startTime + frameStart * CONFIG.hopSize / fs;
+  const tViewEnd   = CONFIG.startTime + frameEnd   * CONFIG.hopSize / fs;
+  const fMin       = binStart * fs / CONFIG.frameSize;
+  const fMax       = (binEnd - 1) * fs / CONFIG.frameSize;
+
+  renderAxes(tViewStart, tViewEnd, fMin, fMax);
+  renderColorbar();
+}
+
+// =============================================================================
+// Zoom — MATLAB-style drag-rectangle zoom on the spectrogram
+// =============================================================================
+/**
+ * The user drags a rectangle on the zoom canvas (which overlays the
+ * spectrogram).  On release the spectrogram and axes are re-rendered for
+ * just the selected sub-region.  Double-click resets to the full view.
+ *
+ * Coordinate mapping:
+ *   Horizontal: x/width → frame index within current viewState window
+ *   Vertical:   y/height → bin index; y=0 = top = highest freq (fMax),
+ *               y=height = bottom = lowest freq (fMin)
+ */
+let isZooming   = false;
+let zoomStartX  = 0;
+let zoomStartY  = 0;
+
+function getEventPos(e, element) {
+  const rect = element.getBoundingClientRect();
+  // For touchend, e.touches is an empty TouchList (truthy object with length 0),
+  // so checking `e.touches` alone is not enough — must check length > 0.
+  // changedTouches always contains the lifted finger on touchend.
+  const src = (e.touches && e.touches.length > 0)            ? e.touches[0]
+            : (e.changedTouches && e.changedTouches.length > 0) ? e.changedTouches[0]
+            : e;
+  return { x: src.clientX - rect.left, y: src.clientY - rect.top };
+}
+
+function syncZoomCanvas() {
+  const w = spectroArea.clientWidth;
+  const h = spectroArea.clientHeight;
+  if (zoomCanvas.width !== w || zoomCanvas.height !== h) {
+    zoomCanvas.width  = w;
+    zoomCanvas.height = h;
+  }
+}
+
+zoomCanvas.addEventListener("mousedown",  onZoomStart);
+zoomCanvas.addEventListener("touchstart", onZoomStart, { passive: false });
+
+function onZoomStart(e) {
+  if (!fullDbMatrix) return;
+  e.preventDefault();
+  syncZoomCanvas();
+  const pos  = getEventPos(e, zoomCanvas);
+  zoomStartX = pos.x;
+  zoomStartY = pos.y;
+  isZooming  = true;
+}
+
+zoomCanvas.addEventListener("mousemove",  onZoomMove);
+zoomCanvas.addEventListener("touchmove",  onZoomMove, { passive: false });
+
+function onZoomMove(e) {
+  if (!isZooming) return;
+  e.preventDefault();
+  syncZoomCanvas();
+  const w   = zoomCanvas.width;
+  const h   = zoomCanvas.height;
+  const pos = getEventPos(e, zoomCanvas);
+
+  const rx = Math.min(zoomStartX, pos.x);
+  const ry = Math.min(zoomStartY, pos.y);
+  const rw = Math.abs(pos.x - zoomStartX);
+  const rh = Math.abs(pos.y - zoomStartY);
+
+  zoomCtx.clearRect(0, 0, w, h);
+
+  // Dim the area outside the selection rectangle
+  zoomCtx.fillStyle = "rgba(0,0,0,0.35)";
+  zoomCtx.fillRect(0,       0,      w,  ry);            // top strip
+  zoomCtx.fillRect(0,       ry + rh, w,  h - ry - rh);  // bottom strip
+  zoomCtx.fillRect(0,       ry,      rx, rh);            // left strip
+  zoomCtx.fillRect(rx + rw, ry,      w - rx - rw, rh);  // right strip
+
+  // Selection rectangle outline
+  zoomCtx.strokeStyle = "#5a8fff";
+  zoomCtx.lineWidth   = 1.5;
+  zoomCtx.setLineDash([4, 2]);
+  zoomCtx.strokeRect(rx, ry, rw, rh);
+  zoomCtx.setLineDash([]);
+}
+
+zoomCanvas.addEventListener("mouseup",  onZoomEnd);
+zoomCanvas.addEventListener("touchend", onZoomEnd);
+
+function onZoomEnd(e) {
+  if (!isZooming || !fullDbMatrix || !viewState) return;
+  isZooming = false;
+
+  const w   = spectroArea.clientWidth;
+  const h   = spectroArea.clientHeight;
+  const pos = getEventPos(e, zoomCanvas);
+
+  // Normalised coords within the current view [0, 1]
+  const nx1 = Math.max(0, Math.min(zoomStartX, pos.x) / w);
+  const nx2 = Math.min(1, Math.max(zoomStartX, pos.x) / w);
+  const ny1 = Math.max(0, Math.min(zoomStartY, pos.y) / h); // top (high freq)
+  const ny2 = Math.min(1, Math.max(zoomStartY, pos.y) / h); // bottom (low freq)
+
+  // Ignore accidental single-clicks (< 2 % of either dimension)
+  if ((nx2 - nx1) < 0.02 || (ny2 - ny1) < 0.02) {
+    zoomCtx.clearRect(0, 0, zoomCanvas.width, zoomCanvas.height);
+    return;
+  }
+
+  // Map normalised coords into the current viewState window
+  const curFrames = viewState.frameEnd - viewState.frameStart;
+  const curBins   = viewState.binEnd   - viewState.binStart;
+
+  const newFrameStart = viewState.frameStart + Math.floor(nx1 * curFrames);
+  const newFrameEnd   = viewState.frameStart + Math.ceil(nx2  * curFrames);
+  // y=0 is the top of the canvas which corresponds to the highest-freq bin
+  const newBinEnd     = viewState.binEnd - Math.floor(ny1 * curBins);
+  const newBinStart   = viewState.binEnd - Math.ceil(ny2  * curBins);
+
+  viewState = {
+    frameStart: Math.max(0, newFrameStart),
+    frameEnd:   Math.min(fullDbMatrix.length,    Math.max(newFrameEnd,   newFrameStart + 2)),
+    binStart:   Math.max(0, newBinStart),
+    binEnd:     Math.min(fullDbMatrix[0].length, Math.max(newBinEnd,     newBinStart + 2)),
+  };
+
+  zoomCtx.clearRect(0, 0, zoomCanvas.width, zoomCanvas.height);
+  renderCurrentView();
+  resetZoomBtn.classList.remove("hidden");
+}
+
+// Double-click on the spectrogram area resets to the full view
+zoomCanvas.addEventListener("dblclick", resetZoom);
+resetZoomBtn.addEventListener("click",   resetZoom);
+
+function resetZoom() {
+  if (!fullDbMatrix) return;
+  viewState = {
+    frameStart: 0,
+    frameEnd:   fullDbMatrix.length,
+    binStart:   0,
+    binEnd:     fullDbMatrix[0].length,
+  };
+  zoomCtx.clearRect(0, 0, zoomCanvas.width, zoomCanvas.height);
+  renderCurrentView();
+  resetZoomBtn.classList.add("hidden");
+}
+
+// =============================================================================
 // Colormap — inferno approximation
 // =============================================================================
 /**
@@ -727,9 +1244,8 @@ function updateCursor() {
  */
 function drawCursor(elapsed) {
   // Sync overlay canvas resolution to its CSS-rendered size.
-  // Must be done before drawing; if dimensions change clearRect is implicit.
-  const w = canvasWrapper.clientWidth;
-  const h = canvasWrapper.clientHeight;
+  const w = spectroArea.clientWidth;
+  const h = spectroArea.clientHeight;
   if (cursorCanvas.width !== w || cursorCanvas.height !== h) {
     cursorCanvas.width  = w;
     cursorCanvas.height = h;
@@ -737,8 +1253,16 @@ function drawCursor(elapsed) {
 
   cursorCtx.clearRect(0, 0, w, h);
 
-  // x = fraction of total duration × display width (CSS pixels)
-  const x = (elapsed / audioDuration) * w;
+  let x;
+  if (viewState && fullDbMatrix) {
+    // Zoom-aware mapping: position the cursor within the visible time window.
+    const tViewStart = CONFIG.startTime + viewState.frameStart * CONFIG.hopSize / sampleRate;
+    const tViewEnd   = CONFIG.startTime + viewState.frameEnd   * CONFIG.hopSize / sampleRate;
+    if (elapsed < tViewStart || elapsed > tViewEnd) return; // outside current view
+    x = ((elapsed - tViewStart) / (tViewEnd - tViewStart)) * w;
+  } else {
+    x = (elapsed / audioDuration) * w;
+  }
 
   cursorCtx.beginPath();
   cursorCtx.moveTo(x, 0);

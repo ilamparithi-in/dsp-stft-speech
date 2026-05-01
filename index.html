@@ -34,9 +34,11 @@
       <!-- Application title — compact, monospaced, no decoration -->
       <div class="sidebar-title">
         <span class="title-main">STFT Viewer</span>
+        <button id="sidebarToggle" class="btn-collapse" title="Collapse sidebar">&#xAB;</button>
       </div>
 
       <div class="sidebar-section">
+        <button class="section-icon-btn" data-action="expand" title="Input file">&#8853;</button>
         <div class="section-label">INPUT</div>
 
         <!-- File selector: plain text label + native file input -->
@@ -52,6 +54,7 @@
       </div>
 
       <div class="sidebar-section">
+        <button class="section-icon-btn" data-action="expand" title="Parameters">&#8801;</button>
         <div class="section-label">PARAMETERS</div>
 
         <!-- Each parameter follows the same label-above-input grid pattern -->
@@ -94,6 +97,7 @@
 
       <!-- Audio metadata — populated after Run decodes the file -->
       <div class="sidebar-section">
+        <button class="section-icon-btn" data-action="expand" title="Audio info">&#8505;</button>
         <div class="section-label">AUDIO INFO</div>
         <div class="field">
           <span class="field-label">Duration (s)</span>
@@ -107,11 +111,13 @@
 
       <!-- Run button — full width of sidebar, styled as a functional control -->
       <div class="sidebar-section">
+        <button class="section-icon-btn" data-action="run" title="Run STFT">&#9654;</button>
         <button id="processBtn" disabled>&#9654; Run</button>
       </div>
 
       <!-- Playback controls — enabled after spectrogram is rendered -->
       <div class="sidebar-section">
+        <button class="section-icon-btn" data-action="play" title="Play / Stop">&#9835;</button>
         <div class="section-label">PLAYBACK</div>
         <button id="playBtn" disabled>&#9654; Play</button>
       </div>
@@ -133,16 +139,39 @@
       <div id="canvasWrapper">
         <!-- Placeholder shown before first render -->
         <div id="placeholder">No data — load a file and press Run</div>
-        <canvas id="spectrogramCanvas"></canvas>
-        <!-- Cursor overlay: absolutely positioned on top of the spectrogram.
-             A separate canvas is used so clearRect only erases the cursor line,
-             leaving the spectrogram pixel data untouched. -->
-        <canvas id="cursorCanvas"></canvas>
 
-        <!-- Axis labels sit outside the canvas to avoid overpainting data -->
-        <div id="axisLabels" class="axis-labels hidden">
-          <span class="x-label">Time &#8594;</span>
-          <span class="y-label">Freq &#8594;</span>
+        <!--
+          spectroGrid: CSS grid that positions the four panel areas.
+          Columns: [y-axis 60px] [spectrogram 1fr] [colorbar 58px]
+          Rows:    [main 1fr]    [x-axis 36px]
+          Hidden until the first spectrogram is rendered.
+        -->
+        <div id="spectroGrid" class="hidden">
+
+          <!-- Y-axis: frequency labels (Hz) — drawn by renderAxes() -->
+          <canvas id="yAxisCanvas"></canvas>
+
+          <!-- Spectrogram + playback cursor overlay -->
+          <div id="spectroArea">
+            <canvas id="spectrogramCanvas"></canvas>
+            <!-- Zoom rectangle overlay: captures mouse/touch events; draws the
+                 selection rectangle while the user drags a zoom region. -->
+            <canvas id="zoomCanvas"></canvas>
+            <!-- Cursor overlay: separate canvas so clearRect only erases the
+                 cursor line, leaving the spectrogram pixel data untouched. -->
+            <canvas id="cursorCanvas"></canvas>
+            <!-- Reset-zoom button: floats top-right, visible only when zoomed -->
+            <button id="resetZoomBtn" class="btn-reset-zoom hidden" title="Double-click spectrogram to reset zoom">&#8862; Reset</button>
+          </div>
+
+          <!-- Colorbar: power scale in dB — drawn by renderColorbar() -->
+          <div id="colorbarArea">
+            <canvas id="colorbarCanvas"></canvas>
+          </div>
+
+          <!-- X-axis: time labels (s) — drawn by renderAxes() -->
+          <canvas id="xAxisCanvas"></canvas>
+
         </div>
       </div>
 
