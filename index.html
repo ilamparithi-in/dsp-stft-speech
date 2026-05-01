@@ -57,32 +57,51 @@
         <!-- Each parameter follows the same label-above-input grid pattern -->
         <div class="field">
           <label class="field-label" for="frameSize">Frame Size</label>
-          <select id="frameSize">
-            <option value="128">128</option>
-            <option value="256" selected>256</option>
-            <option value="512">512</option>
-            <option value="1024">1024</option>
-          </select>
+          <!-- Free-form integer: validation is deferred to computeSTFT() which
+               throws a descriptive error (e.g. non-power-of-2) rather than
+               silently clamping here. -->
+          <input type="number" id="frameSize" value="256" />
         </div>
 
         <div class="field">
           <label class="field-label" for="hopSize">Hop Size</label>
-          <select id="hopSize">
-            <option value="64">64</option>
-            <option value="128" selected>128</option>
-            <option value="256">256</option>
-            <option value="512">512</option>
-          </select>
+          <!-- Free-form integer: no UI enforcement of hop ≤ frame. -->
+          <input type="number" id="hopSize" value="128" />
         </div>
 
         <div class="field">
           <label class="field-label" for="windowType">Window</label>
           <select id="windowType">
-            <option value="hamming" selected>Hamming</option>
-            <option value="hann">Hann</option>
             <option value="rectangular">Rectangular</option>
+            <option value="hann">Hann</option>
+            <option value="hamming" selected>Hamming</option>
             <option value="blackman">Blackman</option>
           </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="startTime">Start Time (s)</label>
+          <!-- Offset into the loaded audio at which STFT analysis begins. -->
+          <input type="number" id="startTime" value="0" step="0.01" />
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="segDuration">Segment Duration (s)</label>
+          <!-- Length of audio to analyse. Validated by prepareSegment(). -->
+          <input type="number" id="segDuration" value="10" step="0.01" />
+        </div>
+      </div>
+
+      <!-- Audio metadata — populated after Run decodes the file -->
+      <div class="sidebar-section">
+        <div class="section-label">AUDIO INFO</div>
+        <div class="field">
+          <span class="field-label">Duration (s)</span>
+          <span id="infoDuration" class="info-value">—</span>
+        </div>
+        <div class="field">
+          <span class="field-label">Sample Rate (Hz)</span>
+          <span id="infoSampleRate" class="info-value">—</span>
         </div>
       </div>
 

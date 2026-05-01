@@ -222,6 +222,53 @@ select:focus {
   outline-offset: 0;
 }
 
+/* ── Number inputs ──────────────────────────────────────────────────────── */
+/*
+ * Free-form numeric inputs share the same flat aesthetic as selects.
+ * The native spinner arrows are hidden — the analyst types exact values.
+ * No min/max is enforced at the CSS layer; validation is handled by the
+ * computation layer (computeSTFT / prepareSegment) which throws descriptive
+ * errors rather than silently clamping.
+ */
+input[type="number"] {
+  appearance: textfield;
+  -webkit-appearance: textfield;
+  -moz-appearance: textfield;
+  background: #252830;
+  color: #e6e6e6;
+  border: 1px solid #3a3f4a;
+  border-radius: 2px;
+  padding: 3px 6px;
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+  width: 100%;
+}
+
+/* Remove spinner buttons in WebKit / Blink */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"]:focus {
+  border-color: #5a8fff;
+  outline: 1px solid #5a8fff;
+  outline-offset: 0;
+}
+
+/* ── Read-only metadata values (audio duration, sample rate) ───────────── */
+/*
+ * Displayed as plain text under a muted label.
+ * Rendered in the accent colour to distinguish them from editable fields.
+ */
+.info-value {
+  font-size: 12px;
+  color: #5a8fff;
+  letter-spacing: 0.03em;
+}
+
 /* ── Run button ─────────────────────────────────────────────────────────── */
 /*
  * Full-width, flat, functional. No border-radius animation or colour

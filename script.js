@@ -17,10 +17,12 @@
 // CONFIG — single place to tune STFT parameters
 // ─────────────────────────────────────────────────────────────────────────────
 const CONFIG = {
-  maxDurationSec: 10,       // hard cap: only first N seconds are processed
+  maxDurationSec: 10,       // hard cap: only first N seconds are loaded
   frameSize: 256,           // FFT window length (must be power of 2)
   hopSize: 128,             // samples between successive frames
   windowType: "hamming",    // default window function
+  startTime: 0,             // seconds into the audio to begin analysis
+  segmentDuration: 10,      // seconds of audio to analyse
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -31,9 +33,15 @@ const fileBtn         = document.getElementById("fileBtn");      // visible Brow
 const fileNameDisplay = document.getElementById("fileNameDisplay");
 const processBtn      = document.getElementById("processBtn");
 const playBtn         = document.getElementById("playBtn");       // play / stop
-const frameSizeSelect = document.getElementById("frameSize");
-const hopSizeSelect   = document.getElementById("hopSize");
+// Free-form number inputs — validation is deferred to the computation layer
+const frameSizeInput  = document.getElementById("frameSize");
+const hopSizeInput    = document.getElementById("hopSize");
 const windowSelect    = document.getElementById("windowType");
+const startTimeInput  = document.getElementById("startTime");
+const segDurationInput = document.getElementById("segDuration");
+// Read-only metadata display (populated after Run decodes the file)
+const infoDuration    = document.getElementById("infoDuration");
+const infoSampleRate  = document.getElementById("infoSampleRate");
 const statusBar       = document.getElementById("statusBar");
 const statusText      = document.getElementById("statusText");
 const canvas          = document.getElementById("spectrogramCanvas");
@@ -97,10 +105,15 @@ processBtn.addEventListener("click", async () => {
   const file = audioInput.files[0];
   if (!file) return;
 
-  // Read current UI parameters into CONFIG
-  CONFIG.frameSize  = parseInt(frameSizeSelect.value, 10);
-  CONFIG.hopSize    = parseInt(hopSizeSelect.value,   10);
-  CONFIG.windowType = windowSelect.value;
+  // Read current UI parameters into CONFIG.
+  // Values are NOT clamped here — invalid inputs (NaN, non-power-of-2, etc.)
+  // are caught and reported by the computation layer (prepareSegment /
+  // computeSTFT), keeping all validation logic in one place.
+  CONFIG.frameSize       = parseInt(frameSizeInput.value,   10);
+  CONFIG.hopSize         = parseInt(hopSizeInput.value,     10);
+  CONFIG.windowType      = windowSelect.value;
+  CONFIG.startTime       = parseFloat(startTimeInput.value);
+  CONFIG.segmentDuration = parseFloat(segDurationInput.value);
 
   processBtn.disabled = true;
   showStatus("Decoding audio…", false);
@@ -109,20 +122,43 @@ processBtn.addEventListener("click", async () => {
     // ── Step 1: decode ──────────────────────────────────────────────────────
     monoSamples = await loadAudio(file);
 
+    // Display audio metadata now that duration and sample rate are known.
+    // The user needs these values to set sensible startTime / segmentDuration.
+    infoDuration.textContent   = (monoSamples.length / sampleRate).toFixed(3);
+    infoSampleRate.textContent = sampleRate;
+
     showStatus("Computing STFT…", false);
 
-    // ── Step 2: STFT ─────────────────────────────────────────────────────────
+    // ── Step 2: slice segment ─────────────────────────────────────────────
+    // Extract the requested analysis window from the loaded samples.
+    // prepareSegment() validates against the full original audio length so
+    // the user can freely adjust startTime / segmentDuration after Run.
+    const segment = prepareSegment(
+      monoSamples,
+      CONFIG.startTime,
+      CONFIG.segmentDuration,
+      sampleRate,
+    );
+
+    // Build the playback buffer from the analyzed segment so playback always
+    // matches the currently displayed spectrogram.
+    const segLen   = segment.length;
+    playbackBuffer = audioCtx.createBuffer(1, segLen, sampleRate);
+    playbackBuffer.getChannelData(0).set(segment);
+    audioDuration  = segLen / sampleRate;
+
+    // ── Step 3: STFT ─────────────────────────────────────────────────────────
     // Yield first so the status label paints before the CPU-bound work starts.
     await yieldToUI();
-    const powerMatrix = computeSTFT(monoSamples, CONFIG);
+    const powerMatrix = computeSTFT(segment, CONFIG);
 
-    // ── Step 3: convert power → dB, normalize, clip ───────────────────────
+    // ── Step 4: convert power → dB, normalize, clip ───────────────────────
     const dbMatrix = computeSpectrogram(powerMatrix);
 
     showStatus("Rendering spectrogram…", false);
     await yieldToUI();
 
-    // ── Step 4: render ────────────────────────────────────────────────────
+    // ── Step 5: render ────────────────────────────────────────────────────
     renderSpectrogram(dbMatrix, canvas, ctx2d);
 
     // Hide the placeholder text and show axis labels once data is painted
@@ -226,18 +262,7 @@ async function loadAudio(file) {
     for (let i = 0; i < length; i++) mono[i] /= numChannels;
   }
 
-  // ── d. Trim to maxDurationSec ─────────────────────────────────────────────
-  const maxSamples = Math.floor(CONFIG.maxDurationSec * sampleRate);
-  const trimmed    = mono.length > maxSamples ? mono.slice(0, maxSamples) : mono;
-
-  // ── e. Build a playback-ready AudioBuffer from the trimmed mono PCM ───────
-  // Stored so startPlayback() can create a source node without re-decoding.
-  const trimLen  = trimmed.length;
-  playbackBuffer = audioCtx.createBuffer(1, trimLen, sampleRate);
-  playbackBuffer.getChannelData(0).set(trimmed);
-  audioDuration  = trimLen / sampleRate;
-
-  return trimmed;
+  return mono;
 }
 
 /**
@@ -252,6 +277,55 @@ function readFileAsArrayBuffer(file) {
     reader.onerror = ()  => reject(new Error("FileReader failed"));
     reader.readAsArrayBuffer(file);
   });
+}
+
+// =============================================================================
+// 1b. prepareSegment(samples, startTime, segmentDuration, fs) → Float32Array
+// =============================================================================
+/**
+ * Slices a raw mono PCM array to the analysis window defined by the UI.
+ *
+ * Validation is performed HERE (the computation layer) rather than in the UI
+ * event handler. This means the UI collects raw user input and forwards it
+ * unchanged; any out-of-range or non-finite value surfaces as a readable error
+ * message in the status bar, preserving the user's original entry.
+ *
+ * @param {Float32Array} samples        - Full loaded mono PCM
+ * @param {number}       startTime      - Offset in seconds (may be 0)
+ * @param {number}       segmentDuration - Analysis window length in seconds
+ * @param {number}       fs             - Sample rate (Hz)
+ * @returns {Float32Array}
+ * @throws {Error} If any parameter is non-finite, out of range, or zero-length
+ */
+function prepareSegment(samples, startTime, segmentDuration, fs) {
+  if (!isFinite(startTime) || !isFinite(segmentDuration)) {
+    throw new Error(
+      `Start time and segment duration must be finite numbers ` +
+      `(got startTime=${startTime}, segmentDuration=${segmentDuration}).`
+    );
+  }
+  if (segmentDuration <= 0) {
+    throw new Error(
+      `Segment duration must be > 0 s (got ${segmentDuration} s).`
+    );
+  }
+  const totalDuration = samples.length / fs;
+  if (startTime < 0 || startTime >= totalDuration) {
+    throw new Error(
+      `Start time ${startTime.toFixed(3)} s is outside the loaded audio range ` +
+      `[0, ${totalDuration.toFixed(3)} s].`
+    );
+  }
+  const maxDuration = totalDuration - startTime;
+  if (segmentDuration > maxDuration) {
+    segmentDuration = maxDuration;
+    // Update the UI input to reflect the clamped value
+    segDurationInput.value = segmentDuration.toFixed(3);
+  }
+  const endTime = startTime + segmentDuration;
+  const startSample = Math.round(startTime * fs);
+  const endSample   = Math.round(endTime   * fs);
+  return samples.slice(startSample, endSample);
 }
 
 // =============================================================================
@@ -319,6 +393,36 @@ function buildWindow(type, N) {
  */
 function computeSTFT(samples, cfg) {
   const { frameSize, hopSize, windowType } = cfg;
+
+  // ── Parameter validation — errors propagate to the UI status bar ─────────
+  // Validation lives here (the computation layer), not in the event handler,
+  // so the UI never silently adjusts what the user typed.
+  if (!Number.isInteger(frameSize) || frameSize <= 0) {
+    throw new Error(
+      `Frame size must be a positive integer (got ${frameSize}).`
+    );
+  }
+  if ((frameSize & (frameSize - 1)) !== 0) {
+    // fft.js requires a power-of-2 size; enforce here rather than producing
+    // a cryptic internal error.
+    throw new Error(
+      `Frame size must be a power of 2 (got ${frameSize}). ` +
+      `Try 128, 256, 512, or 1024.`
+    );
+  }
+  if (!Number.isInteger(hopSize) || hopSize <= 0) {
+    throw new Error(
+      `Hop size must be a positive integer (got ${hopSize}).`
+    );
+  }
+  if (samples.length < frameSize) {
+    throw new Error(
+      `Segment length (${samples.length} samples) is shorter than frame size ` +
+      `(${frameSize}). Increase segment duration or reduce frame size.`
+    );
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   const numBins    = frameSize / 2 + 1;  // positive-frequency bins (DC … Nyquist)
   const window     = buildWindow(windowType, frameSize);
 
