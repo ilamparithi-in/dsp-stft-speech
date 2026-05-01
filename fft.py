@@ -37,7 +37,7 @@ def FFT(x):
     twiddle = np.exp(-2j * np.pi * np.arange(N//2) / N)
 
     first_half  = X_even + twiddle[:N//2] * X_odd
-    second_half = X_even - twiddle[N//2:] * X_odd
+    second_half = X_even - twiddle[:N//2] * X_odd
 
     return np.concatenate([first_half, second_half])
 
@@ -57,28 +57,45 @@ def smallest_factor(n):
             return i
     return n
 
-def FFT_mixed(x):
-    """Mixed radix variant of the Cooley-Tukey FFT
-    N = n1 * n2 -> n1 smaller n2-point DFTs"""
-    x = np.asarray(x, dtype=complex)
-    N = x.shape[0]
-    if N == 1: # Base case, 1 point DFT
-        return x
 
-    r = smallest_factor(N)
-    m = N // r
-    x = x.reshape(r, m)
+## This algorithm is giving wrong answers, dont use
+# def FFT_mixed(x):
+#     """Mixed radix variant of the Cooley-Tukey FFT
+#     N = n1 * n2 -> n1 smaller n2-point DFTs"""
+#     x = np.asarray(x, dtype=complex)
+#     N = x.shape[0]
+#     if N == 1: # Base case, 1 point DFT
+#         return x
 
-    k = np.arange(N).reshape(N, 1)
-    n = np.arange(N).reshape(1, N)
-    W = np.exp(-2j * np.pi * k * n / N)
+#     r = smallest_factor(N)
+#     if r == N:
+#         # Prime-length fallback avoids recursive cycles in mixed-radix splitting.
+#         return DFT(x)
 
-    X = np.array([FFT_mixed(xi) for xi in x])
+#     m = N // r
+#     x = x.reshape(r, m)
 
-    X = X * np.exp(-2j * np.pi * (np.arange(r).reshape(-1,1) * np.arange(m)) / N)
+#     x_split = np.array([x[i::r] for i in range(r)])
+#     X = np.array([FFT_mixed(xi) for xi in x_split])
 
-    X = np.array([FFT_mixed(X[:, j]) for j in range(m)]).T
+#     k = np.arange(r).reshape(-1, 1)
+#     n = np.arange(m).reshape(1, -1)
+#     X = X * np.exp(-2j * np.pi * (k * n) / N)
+#     print(X)
 
-    X = X.reshape(N)
-    return X
+#     result = np.zeros(N, dtype=complex)
+
+#     for n in range(m):
+#         temp = FFT_mixed(X[:, n])
+#         for j in range(r):
+#             result[j*m + n] = temp[j]
+
+#     return result
+
+x = np.random.randint(0, 20, size=15)
+
+print("Input:", x)
+print("DFT:", DFT(x))
+print("FFT:", FFT_safe(x))
+# print("Mixed Radix FFT:", FFT_mixed(x))
 
