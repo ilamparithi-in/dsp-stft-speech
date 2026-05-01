@@ -91,6 +91,12 @@
         <button id="processBtn" disabled>&#9654; Run</button>
       </div>
 
+      <!-- Playback controls — enabled after spectrogram is rendered -->
+      <div class="sidebar-section">
+        <div class="section-label">PLAYBACK</div>
+        <button id="playBtn" disabled>&#9654; Play</button>
+      </div>
+
       <!-- Status line at the bottom of the sidebar, not floating in the page -->
       <div id="statusBar" class="status-bar hidden">
         <span id="statusText"></span>
@@ -109,6 +115,10 @@
         <!-- Placeholder shown before first render -->
         <div id="placeholder">No data — load a file and press Run</div>
         <canvas id="spectrogramCanvas"></canvas>
+        <!-- Cursor overlay: absolutely positioned on top of the spectrogram.
+             A separate canvas is used so clearRect only erases the cursor line,
+             leaving the spectrogram pixel data untouched. -->
+        <canvas id="cursorCanvas"></canvas>
 
         <!-- Axis labels sit outside the canvas to avoid overpainting data -->
         <div id="axisLabels" class="axis-labels hidden">

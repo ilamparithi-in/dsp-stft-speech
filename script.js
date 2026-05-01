@@ -30,19 +30,44 @@ const audioInput      = document.getElementById("audioInput");
 const fileBtn         = document.getElementById("fileBtn");      // visible Browse button
 const fileNameDisplay = document.getElementById("fileNameDisplay");
 const processBtn      = document.getElementById("processBtn");
+const playBtn         = document.getElementById("playBtn");       // play / stop
 const frameSizeSelect = document.getElementById("frameSize");
 const hopSizeSelect   = document.getElementById("hopSize");
 const windowSelect    = document.getElementById("windowType");
 const statusBar       = document.getElementById("statusBar");
 const statusText      = document.getElementById("statusText");
 const canvas          = document.getElementById("spectrogramCanvas");
+const cursorCanvas    = document.getElementById("cursorCanvas");   // cursor overlay
+const canvasWrapper   = document.getElementById("canvasWrapper");
 const axisLabels      = document.getElementById("axisLabels");
-const placeholder     = document.getElementById("placeholder");  // pre-render hint text
+const placeholder     = document.getElementById("placeholder");
 const ctx2d           = canvas.getContext("2d");
+const cursorCtx       = cursorCanvas.getContext("2d");
 
-// Holds the decoded mono PCM after loadAudio() succeeds
+// ─────────────────────────────────────────────────────────────────────────────
+// Audio decode state
+// ─────────────────────────────────────────────────────────────────────────────
 let monoSamples = null;
 let sampleRate  = 0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Playback state
+// ─────────────────────────────────────────────────────────────────────────────
+// A single AudioContext is shared for both decoding and playback.
+// Creating a new context per action is wasteful and can hit browser limits.
+let audioCtx       = null;
+// The decoded, trimmed, mono AudioBuffer — ready to hand to a source node.
+let playbackBuffer = null;
+// Duration of the audio that was STFT'd (may be < full file if > 10 s).
+let audioDuration  = 0;
+// Current AudioBufferSourceNode while playing (null when idle).
+let sourceNode     = null;
+// audioCtx.currentTime recorded at the moment playback started.
+let playStartTime  = 0;
+// Whether a source node is currently scheduled to play.
+let isPlaying      = false;
+// requestAnimationFrame handle for the cursor loop.
+let rafId          = null;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Event wiring
@@ -57,8 +82,11 @@ audioInput.addEventListener("change", () => {
   fileNameDisplay.textContent = file.name;
   fileNameDisplay.classList.add("selected");
   processBtn.disabled = false;
-  // Clear any previous result
+  // Stop any active playback and reset cursor before loading a new file
+  stopPlayback(true);
+  playBtn.disabled = true;
   monoSamples = null;
+  playbackBuffer = null;
   hideStatus();
   clearCanvas();
   axisLabels.classList.add("hidden");
@@ -100,12 +128,25 @@ processBtn.addEventListener("click", async () => {
     // Hide the placeholder text and show axis labels once data is painted
     placeholder.classList.add("hidden");
     axisLabels.classList.remove("hidden");
+    // Enable playback now that we have a rendered spectrogram and playbackBuffer
+    playBtn.disabled = false;
     hideStatus();
   } catch (err) {
     showStatus(`Error: ${err.message}`, true);
     console.error(err);
   } finally {
     processBtn.disabled = false;
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Play button toggle
+// ─────────────────────────────────────────────────────────────────────────────
+playBtn.addEventListener("click", () => {
+  if (isPlaying) {
+    stopPlayback(true);
+  } else {
+    startPlayback();
   }
 });
 
@@ -159,20 +200,24 @@ async function loadAudio(file) {
   const arrayBuffer = await readFileAsArrayBuffer(file);
 
   // ── b. Decode PCM ─────────────────────────────────────────────────────────
-  // AudioContext is created fresh each call so we are not blocked by the
-  // browser's autoplay policy (no audio is actually played).
-  const audioCtx   = new (window.AudioContext || window.webkitAudioContext)();
-  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+  // Reuse the module-level AudioContext. Creating a fresh context per file is
+  // wasteful and browsers limit how many concurrent contexts exist.
+  // The context is created here (during a user-gesture handler) to satisfy the
+  // browser autoplay policy.
+  if (!audioCtx || audioCtx.state === "closed") {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
 
-  sampleRate = audioBuffer.sampleRate;
+  const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+  sampleRate = decoded.sampleRate;
 
   // ── c. Mix to mono ────────────────────────────────────────────────────────
-  const numChannels = audioBuffer.numberOfChannels;
-  const length      = audioBuffer.length;
+  const numChannels = decoded.numberOfChannels;
+  const length      = decoded.length;
   const mono        = new Float32Array(length);
 
   for (let ch = 0; ch < numChannels; ch++) {
-    const channelData = audioBuffer.getChannelData(ch);
+    const channelData = decoded.getChannelData(ch);
     for (let i = 0; i < length; i++) {
       mono[i] += channelData[i];
     }
@@ -183,7 +228,16 @@ async function loadAudio(file) {
 
   // ── d. Trim to maxDurationSec ─────────────────────────────────────────────
   const maxSamples = Math.floor(CONFIG.maxDurationSec * sampleRate);
-  return mono.length > maxSamples ? mono.slice(0, maxSamples) : mono;
+  const trimmed    = mono.length > maxSamples ? mono.slice(0, maxSamples) : mono;
+
+  // ── e. Build a playback-ready AudioBuffer from the trimmed mono PCM ───────
+  // Stored so startPlayback() can create a source node without re-decoding.
+  const trimLen  = trimmed.length;
+  playbackBuffer = audioCtx.createBuffer(1, trimLen, sampleRate);
+  playbackBuffer.getChannelData(0).set(trimmed);
+  audioDuration  = trimLen / sampleRate;
+
+  return trimmed;
 }
 
 /**
@@ -457,4 +511,142 @@ function colormapInferno(v) {
     Math.round(g0 + t * (g1 - g0)),
     Math.round(b0 + t * (b1 - b0)),
   ];
+}
+
+// =============================================================================
+// Playback — startPlayback / stopPlayback / updateCursor / drawCursor
+// =============================================================================
+
+/**
+ * Start audio playback from the beginning and launch the cursor animation loop.
+ *
+ * AudioBufferSourceNodes are single-use — a new one must be created for every
+ * play() call. We connect it to audioCtx.destination (the speakers) and record
+ * the context time so the cursor can track elapsed position.
+ *
+ * We use audioCtx.currentTime (the Web Audio hardware clock) rather than
+ * Date.now() or performance.now() because:
+ *   - audioCtx.currentTime is derived from the audio device sample clock.
+ *   - It advances at exactly the playback rate, so cursor position stays in
+ *     lockstep with the actual audio regardless of GC pauses or JS timer drift.
+ */
+function startPlayback() {
+  if (!playbackBuffer || !audioCtx) return;
+
+  // Cancel any previous playback first (doesn't clear cursor — we'll overwrite it)
+  stopPlayback(false);
+
+  // Resume context if the browser suspended it (autoplay policy)
+  if (audioCtx.state === "suspended") audioCtx.resume();
+
+  sourceNode        = audioCtx.createBufferSource();
+  sourceNode.buffer = playbackBuffer;
+  sourceNode.connect(audioCtx.destination);
+
+  // Snapshot the hardware clock the instant before we call start().
+  // All subsequent elapsed-time calculations subtract this value.
+  playStartTime = audioCtx.currentTime;
+  isPlaying     = true;
+  playBtn.textContent = "\u23F9 Stop";
+
+  // onended fires when the buffer plays out naturally (not when stop() is called)
+  sourceNode.onended = () => {
+    isPlaying = false;
+    sourceNode = null;
+    playBtn.textContent = "\u25B6 Play";
+    // Draw cursor at the very end position so it doesn't snap back to 0
+    drawCursor(audioDuration);
+    // Stop the rAF loop — no more updates needed
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+  };
+
+  sourceNode.start(0);
+  rafId = requestAnimationFrame(updateCursor);
+}
+
+/**
+ * Stop playback immediately and optionally clear the cursor overlay.
+ * @param {boolean} clearCursor - If true, wipe the cursor from the overlay.
+ */
+function stopPlayback(clearCursor) {
+  isPlaying = false;
+
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+
+  if (sourceNode) {
+    sourceNode.onended = null;   // prevent the natural-end handler from firing
+    try { sourceNode.stop(); } catch (_) { /* already stopped */ }
+    sourceNode = null;
+  }
+
+  if (clearCursor) clearCursorCanvas();
+  playBtn.textContent = "\u25B6 Play";
+}
+
+/**
+ * requestAnimationFrame callback — redraws the cursor on every display frame.
+ *
+ * Elapsed time is recomputed from the audio clock on every call, so the cursor
+ * position is always accurate even if a frame is dropped or delayed.
+ */
+function updateCursor() {
+  if (!isPlaying) return;
+
+  const elapsed = Math.min(audioCtx.currentTime - playStartTime, audioDuration);
+  drawCursor(elapsed);
+
+  rafId = requestAnimationFrame(updateCursor);
+}
+
+/**
+ * Draw a 1-pixel vertical cursor line on the overlay canvas at the position
+ * corresponding to `elapsed` seconds into the audio.
+ *
+ * Time-to-pixel mapping:
+ *   The spectrogram canvas has canvas.width = numFrames data columns, but is
+ *   CSS-stretched to fill the full panel width (clientWidth px).
+ *   The cursor overlay has the same CSS dimensions and is sized to clientWidth
+ *   × clientHeight in device-independent pixels so the line is 1px wide.
+ *
+ *   x_css = (elapsed / audioDuration) × clientWidth
+ *
+ * The overlay dimensions are updated on every call to automatically handle
+ * window resize without a separate ResizeObserver.
+ *
+ * @param {number} elapsed - Seconds elapsed since playback started
+ */
+function drawCursor(elapsed) {
+  // Sync overlay canvas resolution to its CSS-rendered size.
+  // Must be done before drawing; if dimensions change clearRect is implicit.
+  const w = canvasWrapper.clientWidth;
+  const h = canvasWrapper.clientHeight;
+  if (cursorCanvas.width !== w || cursorCanvas.height !== h) {
+    cursorCanvas.width  = w;
+    cursorCanvas.height = h;
+  }
+
+  cursorCtx.clearRect(0, 0, w, h);
+
+  // x = fraction of total duration × display width (CSS pixels)
+  const x = (elapsed / audioDuration) * w;
+
+  cursorCtx.beginPath();
+  cursorCtx.moveTo(x, 0);
+  cursorCtx.lineTo(x, h);
+  cursorCtx.strokeStyle = "#ff3333";
+  cursorCtx.lineWidth   = 1.5;
+  cursorCtx.stroke();
+}
+
+/**
+ * Erase the cursor overlay entirely (called on stop or new file load).
+ */
+function clearCursorCanvas() {
+  cursorCtx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
 }

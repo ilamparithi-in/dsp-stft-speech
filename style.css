@@ -327,6 +327,21 @@ select:focus {
   image-rendering: pixelated;  /* no interpolation — preserve FFT bin boundaries */
 }
 
+/*
+ * Cursor overlay canvas.
+ * Absolutely positioned over the spectrogram so it doesn't affect layout.
+ * pointer-events: none keeps all mouse/touch events on the spectrogram below.
+ * width/height attributes are set in JS on each draw to match clientWidth/Height.
+ */
+#cursorCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
 /* ── Axis labels ─────────────────────────────────────────────────────────── */
 /*
  * Axis labels are a thin strip at the bottom of the panel.
