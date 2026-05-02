@@ -74,10 +74,6 @@ const recStatus    = document.getElementById("recStatus");
 const recTimer     = document.getElementById("recTimer");
 // Comparison mode controls
 const comparisonModeSelect  = document.getElementById("comparisonMode");
-const windowAField          = document.getElementById("windowAField");  // wrapper div
-const windowBField          = document.getElementById("windowBField");  // wrapper div
-const windowASelect         = document.getElementById("windowA");
-const windowBSelect         = document.getElementById("windowB");
 // Side-by-side container and its sub-elements
 const sbsContainer      = document.getElementById("sbsContainer");
 const sbsMain           = document.getElementById("sbsMain");
@@ -224,16 +220,11 @@ document.querySelectorAll(".section-icon-btn").forEach((btn) => {
 /**
  * handleComparisonMode() — apply UI state for the currently selected mode.
  *
- * Three modes exist:
+ * Two modes exist:
  *   "single"     — One spectrogram.  Uses the main windowType selector.
- *                  Window A/B selectors are irrelevant and hidden.
  *   "sidebyside" — 2×2 grid of all four windows.  The main window selector is
- *                  also irrelevant (all four are computed automatically), so it
- *                  is disabled.  Window A/B hidden.
- *   "overlay"    — Two stacked canvases (implemented in Step 6).  Window A/B
- *                  selectors are shown so the user can pick which windows to
- *                  compare.  The main windowType selector is hidden since it is
- *                  superseded by the A/B pair.
+ *                  irrelevant (all four are computed automatically), so it
+ *                  is disabled.
  *
  * Disabling controls that are irrelevant for the current mode prevents the
  * user from making changes that have no effect, which would be confusing.
@@ -242,13 +233,7 @@ document.querySelectorAll(".section-icon-btn").forEach((btn) => {
 function handleComparisonMode() {
   const mode = comparisonModeSelect.value;
 
-  // Window A / B: only meaningful for overlay mode
-  const overlayMode = mode === "overlay";
-  windowAField.classList.toggle("hidden", !overlayMode);
-  windowBField.classList.toggle("hidden", !overlayMode);
-
-  // Main window type selector: irrelevant in side-by-side (all four shown)
-  // and in overlay (superseded by Window A / B).
+  // Main window type selector: irrelevant in side-by-side (all four shown).
   const mainWindowRelevant = mode === "single";
   windowSelect.disabled = !mainWindowRelevant;
 
@@ -424,7 +409,7 @@ async function runPipelineFromSamples() {
     renderSideBySide();
 
   } else {
-    // ── Single mode (and overlay placeholder) ─────────────────────────────
+    // ── Single mode ───────────────────────────────────────────────────────
     const powerMatrix = computeSTFT(segment, CONFIG);
 
     // ── Step 4: convert power → dB, normalize, clip ───────────────────────
@@ -2268,7 +2253,7 @@ function updateCursorAllViews() {
       }
     });
   } else {
-    // Single and overlay modes share the main #cursorCanvas over #spectroArea.
+    // Single mode uses the main #cursorCanvas over #spectroArea.
     drawCursorOnCanvas(cursorCanvas, spectroArea, normalizedTime);
   }
 }
