@@ -34,6 +34,8 @@
       <!-- Application title — compact, monospaced, no decoration -->
       <div class="sidebar-title">
         <span class="title-main">STFT Viewer</span>
+        <!-- Mobile-only hint shown after Run — sits right beside the collapse button -->
+        <span id="collapseHint" class="collapse-hint hidden">&#9650; collapse</span>
         <button id="sidebarToggle" class="btn-collapse" title="Collapse sidebar">&#xAB;</button>
       </div>
 
@@ -58,6 +60,11 @@
         <div class="section-label">PARAMETERS</div>
 
         <!-- Each parameter follows the same label-above-input grid pattern -->
+        <div class="field">
+          <label class="field-label" for="sampleRate">Sample Rate (Hz)</label>
+          <input type="number" id="sampleRate" value="48000" step="100" min="1" />
+        </div>
+
         <div class="field">
           <label class="field-label" for="frameSize">Frame Size</label>
           <!-- Free-form integer: validation is deferred to computeSTFT() which
@@ -92,6 +99,12 @@
           <label class="field-label" for="segDuration">Segment Duration (s)</label>
           <!-- Length of audio to analyse. Validated by prepareSegment(). -->
           <input type="number" id="segDuration" value="10" step="0.01" />
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="timeScale">Time Scale (px/s)</label>
+          <!-- Controls horizontal canvas width: higher = more stretched in time. -->
+          <input type="number" id="timeScale" value="150" step="10" min="10" />
         </div>
       </div>
 
@@ -151,17 +164,29 @@
           <!-- Y-axis: frequency labels (Hz) — drawn by renderAxes() -->
           <canvas id="yAxisCanvas"></canvas>
 
-          <!-- Spectrogram + playback cursor overlay -->
-          <div id="spectroArea">
-            <canvas id="spectrogramCanvas"></canvas>
-            <!-- Zoom rectangle overlay: captures mouse/touch events; draws the
-                 selection rectangle while the user drags a zoom region. -->
-            <canvas id="zoomCanvas"></canvas>
-            <!-- Cursor overlay: separate canvas so clearRect only erases the
-                 cursor line, leaving the spectrogram pixel data untouched. -->
-            <canvas id="cursorCanvas"></canvas>
-            <!-- Reset-zoom button: floats top-right, visible only when zoomed -->
-            <button id="resetZoomBtn" class="btn-reset-zoom hidden" title="Double-click spectrogram to reset zoom">&#8862; Reset</button>
+          <!--
+            spectroScrollArea: horizontally scrollable column that holds the
+            spectrogram panel and the time axis below it.  The y-axis and
+            colorbar sit outside this container so they stay fixed.
+          -->
+          <div id="spectroScrollArea">
+
+            <!-- Spectrogram + overlay canvases -->
+            <div id="spectroArea">
+              <canvas id="spectrogramCanvas"></canvas>
+              <!-- Zoom rectangle overlay -->
+              <canvas id="zoomCanvas"></canvas>
+              <!-- Cursor overlay: pointer-events:none, so zoom canvas gets events -->
+              <canvas id="cursorCanvas"></canvas>
+              <!-- Reset-zoom button: floats top-right, visible only when zoomed -->
+              <button id="resetZoomBtn" class="btn-reset-zoom hidden" title="Double-click spectrogram to reset zoom">&#8862; Reset</button>
+              <!-- Scroll/Zoom mode toggle: floats top-left; on mobile touch conflicts with zoom -->
+              <button id="scrollModeBtn" class="btn-scroll-mode hidden" title="Switch to scroll mode">&#8660; Scroll</button>
+            </div>
+
+            <!-- X-axis: time labels — scrolls with the spectrogram -->
+            <canvas id="xAxisCanvas"></canvas>
+
           </div>
 
           <!-- Colorbar: power scale in dB — drawn by renderColorbar() -->
@@ -169,8 +194,12 @@
             <canvas id="colorbarCanvas"></canvas>
           </div>
 
-          <!-- X-axis: time labels (s) — drawn by renderAxes() -->
-          <canvas id="xAxisCanvas"></canvas>
+          <!-- Custom always-visible scrollbar (row 3).
+               Native mobile scrollbars auto-hide on touch release; this one
+               never hides. Synced bidirectionally with spectroScrollArea via JS. -->
+          <div id="spectroCustomScrollbar">
+            <div id="spectroCustomThumb"></div>
+          </div>
 
         </div>
       </div>

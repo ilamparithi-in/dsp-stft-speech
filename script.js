@@ -18,11 +18,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 const CONFIG = {
   maxDurationSec: 10,       // hard cap: only first N seconds are loaded
+  targetSampleRate: 48000,  // desired analysis sample rate (audio resampled if different)
   frameSize: 256,           // FFT window length (must be power of 2)
   hopSize: 128,             // samples between successive frames
   windowType: "hamming",    // default window function
   startTime: 0,             // seconds into the audio to begin analysis
   segmentDuration: 10,      // seconds of audio to analyse
+  pxPerSec: 150,            // horizontal scale: canvas pixels per second
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -34,11 +36,13 @@ const fileNameDisplay = document.getElementById("fileNameDisplay");
 const processBtn      = document.getElementById("processBtn");
 const playBtn         = document.getElementById("playBtn");       // play / stop
 // Free-form number inputs — validation is deferred to the computation layer
+const sampleRateInput  = document.getElementById("sampleRate");
 const frameSizeInput  = document.getElementById("frameSize");
 const hopSizeInput    = document.getElementById("hopSize");
 const windowSelect    = document.getElementById("windowType");
 const startTimeInput  = document.getElementById("startTime");
 const segDurationInput = document.getElementById("segDuration");
+const timeScaleInput   = document.getElementById("timeScale");
 // Read-only metadata display (populated after Run decodes the file)
 const infoDuration    = document.getElementById("infoDuration");
 const infoSampleRate  = document.getElementById("infoSampleRate");
@@ -50,14 +54,19 @@ const zoomCanvas      = document.getElementById("zoomCanvas");     // zoom recta
 // Grid panels — spectroGrid is hidden until first render
 const spectroGrid     = document.getElementById("spectroGrid");
 const spectroArea     = document.getElementById("spectroArea");    // spectrogram cell
+const spectroScrollArea = document.getElementById("spectroScrollArea"); // horizontal scroll wrapper
 const xAxisCanvas     = document.getElementById("xAxisCanvas");
 const yAxisCanvas     = document.getElementById("yAxisCanvas");
 const colorbarCanvas  = document.getElementById("colorbarCanvas");
 const canvasWrapper   = document.getElementById("canvasWrapper");
 const placeholder     = document.getElementById("placeholder");
 const sidebarToggle   = document.getElementById("sidebarToggle");  // collapse button
-const resetZoomBtn    = document.getElementById("resetZoomBtn");   // zoom reset button
-const appEl           = document.getElementById("app");            // root grid element
+const resetZoomBtn          = document.getElementById("resetZoomBtn");           // zoom reset button
+const scrollModeBtn         = document.getElementById("scrollModeBtn");          // scroll/zoom toggle
+const spectroCustomScrollbar = document.getElementById("spectroCustomScrollbar"); // custom scrollbar track
+const spectroCustomThumb    = document.getElementById("spectroCustomThumb");     // custom scrollbar thumb
+const collapseHint          = document.getElementById("collapseHint");           // mobile post-Run hint
+const appEl                 = document.getElementById("app");                    // root grid element
 const ctx2d           = canvas.getContext("2d");
 const cursorCtx       = cursorCanvas.getContext("2d");
 const zoomCtx         = zoomCanvas.getContext("2d");
@@ -122,6 +131,7 @@ function expandSidebar() {
 sidebarToggle.addEventListener("click", () => {
   const isCollapsed = appEl.classList.toggle("sidebar-collapsed");
   applySidebarGlyph(isCollapsed);
+  if (isCollapsed) collapseHint.classList.add("hidden");
 });
 
 // Update glyph when orientation/resize crosses the 640px breakpoint
@@ -201,11 +211,13 @@ processBtn.addEventListener("click", async () => {
   // Values are NOT clamped here — invalid inputs (NaN, non-power-of-2, etc.)
   // are caught and reported by the computation layer (prepareSegment /
   // computeSTFT), keeping all validation logic in one place.
+  CONFIG.targetSampleRate = Math.max(1, parseInt(sampleRateInput.value, 10) || 48000);
   CONFIG.frameSize       = parseInt(frameSizeInput.value,   10);
   CONFIG.hopSize         = parseInt(hopSizeInput.value,     10);
   CONFIG.windowType      = windowSelect.value;
   CONFIG.startTime       = parseFloat(startTimeInput.value);
   CONFIG.segmentDuration = parseFloat(segDurationInput.value);
+  CONFIG.pxPerSec        = Math.max(10, parseFloat(timeScaleInput.value) || 150);
 
   processBtn.disabled = true;
   showStatus("Decoding audio…", false);
@@ -266,6 +278,9 @@ processBtn.addEventListener("click", async () => {
     viewState = { frameStart: 0, frameEnd: numFrames, binStart: 0, binEnd: numBins };
     resetZoomBtn.classList.add("hidden");
 
+    // Set the horizontal canvas width from the time scale before drawing axes.
+    updateSpectroWidth();
+
     // Draw calibrated axes and colorbar now that the grid is laid out.
     const tEnd    = CONFIG.startTime + (numFrames * CONFIG.hopSize) / sampleRate;
     const nyquist = sampleRate / 2;
@@ -274,12 +289,53 @@ processBtn.addEventListener("click", async () => {
 
     // Enable playback now that we have a rendered spectrogram and playbackBuffer
     playBtn.disabled = false;
+    scrollModeBtn.classList.remove("hidden");  // show scroll/zoom toggle
+    // Show the collapse hint on mobile (CSS hides it on desktop)
+    if (window.matchMedia("(max-width: 640px)").matches) {
+      collapseHint.classList.remove("hidden");
+    }
     hideStatus();
   } catch (err) {
     showStatus(`Error: ${err.message}`, true);
     console.error(err);
   } finally {
     processBtn.disabled = false;
+  }
+});
+
+// Tapping the collapse hint collapses the sidebar (same as pressing the toggle)
+collapseHint.addEventListener("click", () => {
+  appEl.classList.add("sidebar-collapsed");
+  applySidebarGlyph(true);
+  collapseHint.classList.add("hidden");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scroll / Zoom mode toggle
+// When scroll mode is active the zoom canvas is transparent to pointer/touch
+// events so swipes fall through to the scroll container beneath it.
+// ─────────────────────────────────────────────────────────────────────────────
+let scrollModeActive = false;
+
+scrollModeBtn.addEventListener("click", () => {
+  scrollModeActive = !scrollModeActive;
+  if (scrollModeActive) {
+    zoomCanvas.style.pointerEvents = "none";
+    scrollModeBtn.textContent = "\u{1F50D} Zoom";
+    scrollModeBtn.classList.add("active");
+    scrollModeBtn.title = "Switch to zoom mode";
+    // Clear any in-progress zoom rectangle
+    if (isZooming) {
+      isZooming = false;
+      document.removeEventListener("mousemove", onZoomMove);
+      document.removeEventListener("mouseup",   onZoomEnd);
+      zoomCtx.clearRect(0, 0, zoomCanvas.width, zoomCanvas.height);
+    }
+  } else {
+    zoomCanvas.style.pointerEvents = "";
+    scrollModeBtn.textContent = "\u21D4 Scroll";
+    scrollModeBtn.classList.remove("active");
+    scrollModeBtn.title = "Switch to scroll mode";
   }
 });
 
@@ -353,15 +409,35 @@ async function loadAudio(file) {
   }
 
   const decoded = await audioCtx.decodeAudioData(arrayBuffer);
-  sampleRate = decoded.sampleRate;
+  const nativeSampleRate = decoded.sampleRate;
+
+  // ── b2. Resample to the user-selected target rate if necessary ────────────
+  // OfflineAudioContext resamples by rendering at the desired sample rate.
+  // The output length is scaled proportionally.
+  let sourceBuf = decoded;
+  if (nativeSampleRate !== CONFIG.targetSampleRate) {
+    const resampledLength = Math.ceil(decoded.length * CONFIG.targetSampleRate / nativeSampleRate);
+    const offlineCtx = new OfflineAudioContext(
+      decoded.numberOfChannels,
+      resampledLength,
+      CONFIG.targetSampleRate,
+    );
+    const src = offlineCtx.createBufferSource();
+    src.buffer = decoded;
+    src.connect(offlineCtx.destination);
+    src.start(0);
+    sourceBuf = await offlineCtx.startRendering();
+  }
+
+  sampleRate = CONFIG.targetSampleRate;
 
   // ── c. Mix to mono ────────────────────────────────────────────────────────
-  const numChannels = decoded.numberOfChannels;
-  const length      = decoded.length;
+  const numChannels = sourceBuf.numberOfChannels;
+  const length      = sourceBuf.length;
   const mono        = new Float32Array(length);
 
   for (let ch = 0; ch < numChannels; ch++) {
-    const channelData = decoded.getChannelData(ch);
+    const channelData = sourceBuf.getChannelData(ch);
     for (let i = 0; i < length; i++) {
       mono[i] += channelData[i];
     }
@@ -758,8 +834,9 @@ function renderAxes(tStart, tEnd, fMin, fMax) {
       yCtx.moveTo(yAxisW - 4, y);
       yCtx.lineTo(yAxisW,     y);
       yCtx.stroke();
-      yCtx.fillStyle    = "#6a6f7a";
-      yCtx.textBaseline = "middle";
+      yCtx.fillStyle = "#6a6f7a";
+      // Clamp label baseline so it stays within the canvas at the extremes.
+      yCtx.textBaseline = y < 6 ? "top" : y > areaH - 6 ? "bottom" : "middle";
       yCtx.fillText(formatFreq(f), yAxisW - 6, y);
     }
 
@@ -924,6 +1001,9 @@ function formatTime(t) {
 function renderCurrentView() {
   if (!fullDbMatrix || !viewState) return;
 
+  // Resize the spectrogram area width to match the time scale before painting.
+  updateSpectroWidth();
+
   const { frameStart, frameEnd, binStart, binEnd } = viewState;
 
   // Build a sub-matrix that covers only the visible frames/bins.
@@ -943,6 +1023,114 @@ function renderCurrentView() {
   renderAxes(tViewStart, tViewEnd, fMin, fMax);
   renderColorbar();
 }
+
+// =============================================================================
+// updateSpectroWidth — set spectroArea CSS width from time scale + view state
+// =============================================================================
+/**
+ * Computes the desired pixel width of the spectrogram area from the current
+ * view duration and CONFIG.pxPerSec, then applies it as an inline style.
+ * The minimum is the scroll container's visible width so that short segments
+ * fill the available space without activating the scrollbar.
+ */
+function updateSpectroWidth() {
+  if (!viewState || !sampleRate) return;
+  const viewDuration = (viewState.frameEnd - viewState.frameStart) * CONFIG.hopSize / sampleRate;
+  const minW = spectroScrollArea.clientWidth || 100;
+  const w = Math.max(Math.round(viewDuration * CONFIG.pxPerSec), minW);
+  spectroArea.style.width = w + "px";
+  // Let the browser apply the new width before computing thumb metrics.
+  requestAnimationFrame(updateCustomScrollbar);
+}
+
+// =============================================================================
+// Custom scrollbar — always-visible thumb synced with spectroScrollArea
+// =============================================================================
+/**
+ * Positions and sizes the thumb to reflect the current scroll state.
+ * Called on scroll events, after width changes, and on resize.
+ */
+function updateCustomScrollbar() {
+  const scrollW = spectroScrollArea.scrollWidth;
+  const clientW = spectroScrollArea.clientWidth;
+  const trackW  = spectroCustomScrollbar.clientWidth;
+  if (trackW === 0) return;
+
+  if (scrollW <= clientW) {
+    // Content fits — fill the track so it’s clear there’s nothing to scroll.
+    spectroCustomThumb.style.width = trackW + "px";
+    spectroCustomThumb.style.left  = "0px";
+    return;
+  }
+
+  const thumbW    = Math.max(24, Math.round((clientW / scrollW) * trackW));
+  const thumbRange  = trackW - thumbW;
+  const scrollFrac  = spectroScrollArea.scrollLeft / (scrollW - clientW);
+  spectroCustomThumb.style.width = thumbW + "px";
+  spectroCustomThumb.style.left  = Math.round(scrollFrac * thumbRange) + "px";
+}
+
+spectroScrollArea.addEventListener("scroll", updateCustomScrollbar);
+
+// ─ Thumb drag ────────────────────────────────────────────────────────────────────
+let thumbDragging = false;
+let thumbDragStartX = 0;
+let thumbDragStartScrollLeft = 0;
+
+function onThumbDragStart(e) {
+  thumbDragging = true;
+  const src = (e.touches && e.touches.length > 0) ? e.touches[0] : e;
+  thumbDragStartX          = src.clientX;
+  thumbDragStartScrollLeft = spectroScrollArea.scrollLeft;
+  spectroCustomThumb.classList.add("active");
+  document.addEventListener("mousemove", onThumbDragMove);
+  document.addEventListener("mouseup",   onThumbDragEnd);
+  document.addEventListener("touchmove", onThumbDragMove, { passive: false });
+  document.addEventListener("touchend",  onThumbDragEnd);
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+function onThumbDragMove(e) {
+  if (!thumbDragging) return;
+  e.preventDefault();
+  const src = (e.touches && e.touches.length > 0) ? e.touches[0] : e;
+  const dx         = src.clientX - thumbDragStartX;
+  const trackW     = spectroCustomScrollbar.clientWidth;
+  const thumbW     = spectroCustomThumb.offsetWidth;
+  const thumbRange = trackW - thumbW;
+  if (thumbRange <= 0) return;
+  const scrollRange = spectroScrollArea.scrollWidth - spectroScrollArea.clientWidth;
+  const scrollDelta = dx * (scrollRange / thumbRange);
+  spectroScrollArea.scrollLeft = Math.max(0, Math.min(scrollRange, thumbDragStartScrollLeft + scrollDelta));
+}
+
+function onThumbDragEnd() {
+  thumbDragging = false;
+  spectroCustomThumb.classList.remove("active");
+  document.removeEventListener("mousemove", onThumbDragMove);
+  document.removeEventListener("mouseup",   onThumbDragEnd);
+  document.removeEventListener("touchmove", onThumbDragMove);
+  document.removeEventListener("touchend",  onThumbDragEnd);
+}
+
+spectroCustomThumb.addEventListener("mousedown",  onThumbDragStart);
+spectroCustomThumb.addEventListener("touchstart", onThumbDragStart, { passive: false });
+
+// Click on track (outside thumb) — jump scroll by one page
+spectroCustomScrollbar.addEventListener("click", (e) => {
+  if (e.target === spectroCustomThumb) return;  // handled by thumb drag
+  const rect     = spectroCustomScrollbar.getBoundingClientRect();
+  const clickX   = e.clientX - rect.left;
+  const trackW   = spectroCustomScrollbar.clientWidth;
+  const thumbW   = spectroCustomThumb.offsetWidth;
+  const thumbLeft = parseFloat(spectroCustomThumb.style.left) || 0;
+  const pageW    = spectroScrollArea.clientWidth;
+  spectroScrollArea.scrollLeft += clickX < thumbLeft ? -pageW : pageW;
+});
+
+// Keep thumb in sync when window is resized
+window.addEventListener("resize", updateCustomScrollbar);
 
 // =============================================================================
 // Zoom — MATLAB-style drag-rectangle zoom on the spectrogram
@@ -992,10 +1180,20 @@ function onZoomStart(e) {
   zoomStartX = pos.x;
   zoomStartY = pos.y;
   isZooming  = true;
+  // Track mouse outside the canvas so dragging to the edge works correctly.
+  document.addEventListener("mousemove", onZoomMove);
+  document.addEventListener("mouseup",   onZoomEnd);
 }
 
-zoomCanvas.addEventListener("mousemove",  onZoomMove);
 zoomCanvas.addEventListener("touchmove",  onZoomMove, { passive: false });
+
+function clampedPos(e) {
+  const pos = getEventPos(e, zoomCanvas);
+  return {
+    x: Math.max(0, Math.min(zoomCanvas.width,  pos.x)),
+    y: Math.max(0, Math.min(zoomCanvas.height, pos.y)),
+  };
+}
 
 function onZoomMove(e) {
   if (!isZooming) return;
@@ -1003,7 +1201,7 @@ function onZoomMove(e) {
   syncZoomCanvas();
   const w   = zoomCanvas.width;
   const h   = zoomCanvas.height;
-  const pos = getEventPos(e, zoomCanvas);
+  const pos = clampedPos(e);
 
   const rx = Math.min(zoomStartX, pos.x);
   const ry = Math.min(zoomStartY, pos.y);
@@ -1027,16 +1225,19 @@ function onZoomMove(e) {
   zoomCtx.setLineDash([]);
 }
 
-zoomCanvas.addEventListener("mouseup",  onZoomEnd);
-zoomCanvas.addEventListener("touchend", onZoomEnd);
+zoomCanvas.addEventListener("touchend",   onZoomEnd);
 
 function onZoomEnd(e) {
+  // Remove document-level listeners regardless of whether zoom is active.
+  document.removeEventListener("mousemove", onZoomMove);
+  document.removeEventListener("mouseup",   onZoomEnd);
+
   if (!isZooming || !fullDbMatrix || !viewState) return;
   isZooming = false;
 
   const w   = spectroArea.clientWidth;
   const h   = spectroArea.clientHeight;
-  const pos = getEventPos(e, zoomCanvas);
+  const pos = clampedPos(e);
 
   // Normalised coords within the current view [0, 1]
   const nx1 = Math.max(0, Math.min(zoomStartX, pos.x) / w);
@@ -1185,6 +1386,8 @@ function startPlayback() {
   };
 
   sourceNode.start(0);
+  // Snap scroll to the beginning when play starts.
+  spectroScrollArea.scrollLeft = 0;
   rafId = requestAnimationFrame(updateCursor);
 }
 
@@ -1221,8 +1424,29 @@ function updateCursor() {
 
   const elapsed = Math.min(audioCtx.currentTime - playStartTime, audioDuration);
   drawCursor(elapsed);
+  autoScrollToElapsed(elapsed);
 
   rafId = requestAnimationFrame(updateCursor);
+}
+
+/**
+ * Page-by-page auto-scroll: when the playback cursor moves past the right
+ * edge of the visible scroll area, advance the scroll position by exactly
+ * one page width (like pressing PgDn).  The cursor will then appear near
+ * the left edge of the new page and travel rightward again.
+ */
+function autoScrollToElapsed(elapsed) {
+  if (!viewState || !fullDbMatrix) return;
+  const tViewStart = CONFIG.startTime + viewState.frameStart * CONFIG.hopSize / sampleRate;
+  const tViewEnd   = CONFIG.startTime + viewState.frameEnd   * CONFIG.hopSize / sampleRate;
+  if (elapsed < tViewStart || elapsed > tViewEnd) return;
+  const canvasW  = spectroArea.clientWidth;
+  const x        = ((elapsed - tViewStart) / (tViewEnd - tViewStart)) * canvasW;
+  const pageW    = spectroScrollArea.clientWidth;
+  const scrollLeft = spectroScrollArea.scrollLeft;
+  if (x > scrollLeft + pageW) {
+    spectroScrollArea.scrollLeft = scrollLeft + pageW;
+  }
 }
 
 /**
