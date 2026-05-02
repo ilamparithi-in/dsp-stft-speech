@@ -67,6 +67,27 @@ const spectroCustomScrollbar = document.getElementById("spectroCustomScrollbar")
 const spectroCustomThumb    = document.getElementById("spectroCustomThumb");     // custom scrollbar thumb
 const collapseHint          = document.getElementById("collapseHint");           // mobile post-Run hint
 const appEl                 = document.getElementById("app");                    // root grid element
+// Comparison mode controls
+const comparisonModeSelect  = document.getElementById("comparisonMode");
+const windowAField          = document.getElementById("windowAField");  // wrapper div
+const windowBField          = document.getElementById("windowBField");  // wrapper div
+const windowASelect         = document.getElementById("windowA");
+const windowBSelect         = document.getElementById("windowB");
+// Side-by-side container and its sub-elements
+const sbsContainer      = document.getElementById("sbsContainer");
+const sbsMain           = document.getElementById("sbsMain");
+const sbsScrollModeBtn  = document.getElementById("sbsScrollModeBtn");
+const sbsPanelsRow      = document.getElementById("sbsPanelsRow");
+const sbsYAxisCanvas    = document.getElementById("sbsYAxisCanvas");
+const sbsXAxisCanvas    = document.getElementById("sbsXAxisCanvas");
+const sbsXAxisWrapper   = document.getElementById("sbsXAxisWrapper");
+const sbsColorbarCanvas = document.getElementById("sbsColorbarCanvas");
+const sbsCustomScrollbar = document.getElementById("sbsCustomScrollbar");
+const sbsCustomThumb    = document.getElementById("sbsCustomThumb");
+// NodeList of the 4 .sbs-panel divs (in DOM order: rectangular, hann, hamming, blackman)
+const sbsPanels = document.querySelectorAll(".sbs-panel");
+// Per-panel scroll containers — one per spectrogram panel, synchronized via JS
+const sbsPanelScrolls = document.querySelectorAll(".sbs-panel-scroll");
 const ctx2d           = canvas.getContext("2d");
 const cursorCtx       = cursorCanvas.getContext("2d");
 const zoomCtx         = zoomCanvas.getContext("2d");
@@ -84,8 +105,10 @@ let sampleRate  = 0;
 // viewState     — currently displayed sub-region in frame / bin index space.
 //                 null until first successful render.
 // ─────────────────────────────────────────────────────────────────────────────
-let fullDbMatrix = null;
-let viewState    = null;  // { frameStart, frameEnd, binStart, binEnd }
+let fullDbMatrix  = null;
+let viewState     = null;  // { frameStart, frameEnd, binStart, binEnd }
+// Side-by-side mode: one dB matrix per window type.
+let fullDbMatrices = null;  // { rectangular, hann, hamming, blackman } | null
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Playback state
@@ -149,8 +172,10 @@ window.addEventListener("resize", () => {
 // A 60 ms debounce avoids re-rendering during every frame of a CSS transition.
 // ─────────────────────────────────────────────────────────────────────────────
 let resizeRafId = null;
+let resizeRenderPending = false;  // guard against ResizeObserver feedback loop
 const gridResizeObserver = new ResizeObserver(() => {
-  if (!fullDbMatrix) return;  // nothing rendered yet
+  if (!fullDbMatrix && !fullDbMatrices) return;  // nothing rendered yet
+  if (resizeRenderPending) return;               // rendering caused this — skip
   // Cancel any pending frame — we only need one re-render at the end
   // of a batch of resize events.
   if (resizeRafId !== null) cancelAnimationFrame(resizeRafId);
@@ -158,11 +183,20 @@ const gridResizeObserver = new ResizeObserver(() => {
   // ensuring getBoundingClientRect() in renderAxes reads settled sizes.
   resizeRafId = requestAnimationFrame(() => {
     resizeRafId = null;
-    renderCurrentView();
-    renderColorbar();
+    resizeRenderPending = true;
+    if (fullDbMatrices && comparisonModeSelect.value === "sidebyside") {
+      renderSideBySide();
+    } else if (fullDbMatrix) {
+      renderCurrentView();
+      renderColorbar();
+    }
+    // Clear flag after browser has a chance to flush any layout changes
+    // caused by the render (canvas attribute changes etc.).
+    requestAnimationFrame(() => { resizeRenderPending = false; });
   });
 });
 gridResizeObserver.observe(spectroGrid);
+gridResizeObserver.observe(sbsContainer);
 
 document.querySelectorAll(".section-icon-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -178,6 +212,61 @@ document.querySelectorAll(".section-icon-btn").forEach((btn) => {
     }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Comparison mode framework
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * handleComparisonMode() — apply UI state for the currently selected mode.
+ *
+ * Three modes exist:
+ *   "single"     — One spectrogram.  Uses the main windowType selector.
+ *                  Window A/B selectors are irrelevant and hidden.
+ *   "sidebyside" — 2×2 grid of all four windows.  The main window selector is
+ *                  also irrelevant (all four are computed automatically), so it
+ *                  is disabled.  Window A/B hidden.
+ *   "overlay"    — Two stacked canvases (implemented in Step 6).  Window A/B
+ *                  selectors are shown so the user can pick which windows to
+ *                  compare.  The main windowType selector is hidden since it is
+ *                  superseded by the A/B pair.
+ *
+ * Disabling controls that are irrelevant for the current mode prevents the
+ * user from making changes that have no effect, which would be confusing.
+ * The controls are re-enabled immediately when the mode changes back.
+ */
+function handleComparisonMode() {
+  const mode = comparisonModeSelect.value;
+
+  // Window A / B: only meaningful for overlay mode
+  const overlayMode = mode === "overlay";
+  windowAField.classList.toggle("hidden", !overlayMode);
+  windowBField.classList.toggle("hidden", !overlayMode);
+
+  // Main window type selector: irrelevant in side-by-side (all four shown)
+  // and in overlay (superseded by Window A / B).
+  const mainWindowRelevant = mode === "single";
+  windowSelect.disabled = !mainWindowRelevant;
+
+  // Show/hide the appropriate display container when switching modes.
+  // Only switch visibility if data has already been rendered; otherwise
+  // both containers stay hidden (placeholder is shown) until the next Run.
+  if (fullDbMatrix || fullDbMatrices) {
+    const isSbs = mode === "sidebyside";
+    spectroGrid.classList.toggle("hidden", isSbs);
+    sbsContainer.classList.toggle("hidden", !isSbs);
+    // Re-render if the visible container has data matching the selected mode
+    if (isSbs && fullDbMatrices) {
+      renderSideBySide();
+    } else if (!isSbs && fullDbMatrix) {
+      renderCurrentView();
+      renderColorbar();
+    }
+  }
+}
+
+// Apply on load (mode defaults to "single") and whenever the user changes it.
+handleComparisonMode();
+comparisonModeSelect.addEventListener("change", handleComparisonMode);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Event wiring
@@ -254,38 +343,73 @@ processBtn.addEventListener("click", async () => {
     // ── Step 3: STFT ─────────────────────────────────────────────────────────
     // Yield first so the status label paints before the CPU-bound work starts.
     await yieldToUI();
-    const powerMatrix = computeSTFT(segment, CONFIG);
 
-    // ── Step 4: convert power → dB, normalize, clip ───────────────────────
-    const dbMatrix = computeSpectrogram(powerMatrix);
+    const mode = comparisonModeSelect.value;
 
-    showStatus("Rendering spectrogram…", false);
-    await yieldToUI();
+    if (mode === "sidebyside") {
+      // ── Side-by-side: compute STFT for all four window types ──────────────
+      const windowTypes = ["rectangular", "hann", "hamming", "blackman"];
+      fullDbMatrices = {};
+      for (const wt of windowTypes) {
+        const pm = computeSTFT(segment, { ...CONFIG, windowType: wt });
+        fullDbMatrices[wt] = computeSpectrogram(pm);
+        await yieldToUI();
+      }
 
-    // ── Step 5: render ────────────────────────────────────────────────────
-    renderSpectrogram(dbMatrix, canvas, ctx2d);
+      // Use any matrix to establish the shared view state (all have same dims)
+      const ref = fullDbMatrices["hann"];
+      const numFrames = ref.length;
+      const numBins   = CONFIG.frameSize / 2 + 1;
+      viewState = { frameStart: 0, frameEnd: numFrames, binStart: 0, binEnd: numBins };
+      fullDbMatrix = null;  // clear single-mode state
 
-    // Show the spectroGrid (reveals axes, colorbar, spectrogram) now that
-    // data is painted.  Axes canvases must be visible before clientWidth is
-    // read, otherwise they report 0 dimensions.
-    placeholder.classList.add("hidden");
-    spectroGrid.classList.remove("hidden");
+      showStatus("Rendering spectrograms…", false);
+      await yieldToUI();
 
-    // Store the full result so zoom can re-render any sub-region.
-    fullDbMatrix = dbMatrix;
-    const numFrames = dbMatrix.length;
-    const numBins   = CONFIG.frameSize / 2 + 1;
-    viewState = { frameStart: 0, frameEnd: numFrames, binStart: 0, binEnd: numBins };
-    resetZoomBtn.classList.add("hidden");
+      placeholder.classList.add("hidden");
+      spectroGrid.classList.add("hidden");
+      sbsContainer.classList.remove("hidden");
 
-    // Set the horizontal canvas width from the time scale before drawing axes.
-    updateSpectroWidth();
+      updateSbsWidth();
+      renderSideBySide();
 
-    // Draw calibrated axes and colorbar now that the grid is laid out.
-    const tEnd    = CONFIG.startTime + (numFrames * CONFIG.hopSize) / sampleRate;
-    const nyquist = sampleRate / 2;
-    renderAxes(CONFIG.startTime, tEnd, 0, nyquist);
-    renderColorbar();
+    } else {
+      // ── Single mode (and overlay placeholder) ─────────────────────────────
+      const powerMatrix = computeSTFT(segment, CONFIG);
+
+      // ── Step 4: convert power → dB, normalize, clip ───────────────────────
+      const dbMatrix = computeSpectrogram(powerMatrix);
+
+      showStatus("Rendering spectrogram…", false);
+      await yieldToUI();
+
+      // ── Step 5: render ────────────────────────────────────────────────────
+      renderSpectrogram(dbMatrix, canvas, ctx2d);
+
+      // Show the spectroGrid (reveals axes, colorbar, spectrogram) now that
+      // data is painted.  Axes canvases must be visible before clientWidth is
+      // read, otherwise they report 0 dimensions.
+      placeholder.classList.add("hidden");
+      spectroGrid.classList.remove("hidden");
+      sbsContainer.classList.add("hidden");
+
+      // Store the full result so zoom can re-render any sub-region.
+      fullDbMatrix = dbMatrix;
+      fullDbMatrices = null;  // clear sbs state
+      const numFrames = dbMatrix.length;
+      const numBins   = CONFIG.frameSize / 2 + 1;
+      viewState = { frameStart: 0, frameEnd: numFrames, binStart: 0, binEnd: numBins };
+      resetZoomBtn.classList.add("hidden");
+
+      // Set the horizontal canvas width from the time scale before drawing axes.
+      updateSpectroWidth();
+
+      // Draw calibrated axes and colorbar now that the grid is laid out.
+      const tEnd    = CONFIG.startTime + (numFrames * CONFIG.hopSize) / sampleRate;
+      const nyquist = sampleRate / 2;
+      renderAxes(CONFIG.startTime, tEnd, 0, nyquist);
+      renderColorbar();
+    }
 
     // Enable playback now that we have a rendered spectrogram and playbackBuffer
     playBtn.disabled = false;
@@ -315,6 +439,25 @@ collapseHint.addEventListener("click", () => {
 // When scroll mode is active the zoom canvas is transparent to pointer/touch
 // events so swipes fall through to the scroll container beneath it.
 // ─────────────────────────────────────────────────────────────────────────────
+let sbsScrollModeActive = false;
+
+sbsScrollModeBtn.addEventListener("click", () => {
+  sbsScrollModeActive = !sbsScrollModeActive;
+  if (sbsScrollModeActive) {
+    document.querySelectorAll(".sbs-zoom-canvas").forEach((c) => {
+      c.style.pointerEvents = "none";
+    });
+    sbsScrollModeBtn.textContent = "\u{1F50D} Zoom mode: tap to scroll";
+    sbsScrollModeBtn.classList.add("active");
+  } else {
+    document.querySelectorAll(".sbs-zoom-canvas").forEach((c) => {
+      c.style.pointerEvents = "";
+    });
+    sbsScrollModeBtn.textContent = "\u21D4 Scroll mode: tap to drag-zoom";
+    sbsScrollModeBtn.classList.remove("active");
+  }
+});
+
 let scrollModeActive = false;
 
 scrollModeBtn.addEventListener("click", () => {
@@ -991,6 +1134,483 @@ function formatTime(t) {
 }
 
 // =============================================================================
+// renderSideBySide — render all 4 window panels with shared viewState
+// =============================================================================
+/**
+ * Renders each of the 4 side-by-side spectrogram panels using the shared
+ * viewState.  Called after Run in sbs mode and after any synchronized zoom.
+ */
+function renderSideBySide() {
+  if (!fullDbMatrices || !viewState) return;
+
+  updateSbsWidth();
+
+  const { frameStart, frameEnd, binStart, binEnd } = viewState;
+  const windowTypes = ["rectangular", "hann", "hamming", "blackman"];
+
+  sbsPanels.forEach((panel) => {
+    const wt = panel.dataset.window;
+    const dbMatrix = fullDbMatrices[wt];
+    if (!dbMatrix) return;
+
+    const subMatrix = [];
+    for (let t = frameStart; t < frameEnd; t++) {
+      subMatrix.push(dbMatrix[t].slice(binStart, binEnd));
+    }
+
+    const cvs = panel.querySelector(".sbs-canvas");
+    const cCtx = cvs.getContext("2d");
+    renderSpectrogram(subMatrix, cvs, cCtx);
+  });
+
+  const fs         = sampleRate;
+  const tViewStart = CONFIG.startTime + frameStart * CONFIG.hopSize / fs;
+  const tViewEnd   = CONFIG.startTime + frameEnd   * CONFIG.hopSize / fs;
+  const fMin       = binStart * fs / CONFIG.frameSize;
+  const fMax       = (binEnd - 1) * fs / CONFIG.frameSize;
+
+  renderSbsAxes(tViewStart, tViewEnd, fMin, fMax);
+  renderSbsColorbar();
+}
+
+/**
+ * Sets the pixel width of each .sbs-panel-inner so the spectrogram content
+ * respects the time scale (pxPerSec).  The x-axis canvas is sized to match.
+ * All 4 panels use the same width; scroll is synchronized via JS.
+ */
+function updateSbsWidth() {
+  if (!viewState || !sampleRate) return;
+  const viewDuration = (viewState.frameEnd - viewState.frameStart) * CONFIG.hopSize / sampleRate;
+  const minW = (sbsPanelScrolls[0] && sbsPanelScrolls[0].clientWidth) || 100;
+  const w = Math.max(Math.round(viewDuration * CONFIG.pxPerSec), minW);
+  // Each panel inner's width drives its scrollable content size
+  sbsPanels.forEach((panel) => {
+    const inner = panel.querySelector(".sbs-panel-inner");
+    if (inner) inner.style.width = w + "px";
+  });
+  requestAnimationFrame(updateSbsScrollbar);
+}
+
+/**
+ * Draws shared X and Y axis canvases for the side-by-side view.
+ * The Y-axis sits outside the scroll area so it stays fixed.
+ * The X-axis sits inside so it scrolls with the panels.
+ */
+function renderSbsAxes(tStart, tEnd, fMin, fMax) {
+  // areaW = scrollable content width (matches each .sbs-panel-inner width)
+  const firstInner = sbsPanelsRow.querySelector(".sbs-panel-inner");
+  const areaW = firstInner ? firstInner.offsetWidth : 0;
+  // areaH: use the canvas's own CSS-determined clientHeight to avoid a
+  // feedback loop where setting the attribute would change the grid row
+  // height, trigger the ResizeObserver, and re-enter renderSbsAxes.
+  // Fall back to sbsPanelsRow.getBoundingClientRect().height only when
+  // clientHeight is 0 (e.g. very first render before layout has settled).
+  const areaH = sbsYAxisCanvas.clientHeight
+              || Math.round(sbsPanelsRow.getBoundingClientRect().height);
+  if (areaW === 0 || areaH === 0) return;
+
+  const xAxisH = 36;
+  const yAxisW = Math.round(sbsYAxisCanvas.getBoundingClientRect().width)  || 60;
+
+  // ── X-axis (time) ─────────────────────────────────────────────────────────
+  sbsXAxisCanvas.width  = areaW;
+  sbsXAxisCanvas.height = xAxisH;
+  const xCtx = sbsXAxisCanvas.getContext("2d");
+  xCtx.clearRect(0, 0, areaW, xAxisH);
+
+  if (areaW > 0 && xAxisH > 0) {
+    const xTicks = niceTicks(tStart, tEnd, 10);
+    xCtx.font         = "10px Consolas, Menlo, monospace";
+    xCtx.lineWidth    = 1;
+    xCtx.textBaseline = "top";
+
+    for (const t of xTicks) {
+      if (t < tStart - 1e-9 || t > tEnd + 1e-9) continue;
+      const x = ((t - tStart) / (tEnd - tStart)) * areaW;
+      xCtx.strokeStyle = "#3a3f4a";
+      xCtx.beginPath();
+      xCtx.moveTo(x, 0);
+      xCtx.lineTo(x, 5);
+      xCtx.stroke();
+      xCtx.fillStyle = "#6a6f7a";
+      xCtx.textAlign = "center";
+      xCtx.fillText(formatTime(t), x, 7);
+    }
+
+    xCtx.fillStyle = "#9aa0ad";
+    xCtx.textAlign = "right";
+    xCtx.fillText("Time (s)", areaW - 1, 7);
+  }
+
+  // ── Y-axis (frequency) — shared, drawn once ───────────────────────────────
+  sbsYAxisCanvas.width  = yAxisW;
+  sbsYAxisCanvas.height = areaH;
+  const yCtx = sbsYAxisCanvas.getContext("2d");
+  yCtx.clearRect(0, 0, yAxisW, areaH);
+
+  if (yAxisW > 0 && areaH > 0) {
+    const yTicks = niceTicks(fMin, fMax, 10);
+    yCtx.font      = "10px Consolas, Menlo, monospace";
+    yCtx.lineWidth = 1;
+    yCtx.textAlign = "right";
+
+    for (const f of yTicks) {
+      if (f < fMin - 1e-9 || f > fMax + 1e-9) continue;
+      const y = (1 - (f - fMin) / (fMax - fMin)) * areaH;
+      yCtx.strokeStyle = "#3a3f4a";
+      yCtx.beginPath();
+      yCtx.moveTo(yAxisW - 4, y);
+      yCtx.lineTo(yAxisW,     y);
+      yCtx.stroke();
+      yCtx.fillStyle = "#6a6f7a";
+      yCtx.textBaseline = y < 6 ? "top" : y > areaH - 6 ? "bottom" : "middle";
+      yCtx.fillText(formatFreq(f), yAxisW - 6, y);
+    }
+
+    yCtx.save();
+    yCtx.translate(10, areaH / 2);
+    yCtx.rotate(-Math.PI / 2);
+    yCtx.textAlign    = "center";
+    yCtx.textBaseline = "top";
+    yCtx.font         = "9px Consolas, Menlo, monospace";
+    yCtx.fillStyle    = "#9aa0ad";
+    yCtx.fillText("Frequency (Hz)", 0, 0);
+    yCtx.restore();
+  }
+}
+
+/**
+ * Draws the colorbar for the sbs view onto sbsColorbarCanvas.
+ * Identical logic to renderColorbar() but targets the sbs canvas.
+ */
+function renderSbsColorbar() {
+  sbsColorbarCanvas.width  = sbsColorbarCanvas.clientWidth;
+  sbsColorbarCanvas.height = sbsColorbarCanvas.clientHeight;
+  const cbCtx = sbsColorbarCanvas.getContext("2d");
+  cbCtx.clearRect(0, 0, sbsColorbarCanvas.width, sbsColorbarCanvas.height);
+  if (sbsColorbarCanvas.width === 0 || sbsColorbarCanvas.height === 0) return;
+
+  const DB_MIN = -80;
+  const DB_MAX =   0;
+  const barX   = 4;
+  const barW   = 12;
+  const barTop = 18;
+  const barBot = sbsColorbarCanvas.height - 6;
+  const barH   = barBot - barTop;
+
+  cbCtx.font         = "9px Consolas, Menlo, monospace";
+  cbCtx.fillStyle    = "#9aa0ad";
+  cbCtx.textAlign    = "center";
+  cbCtx.textBaseline = "top";
+  cbCtx.fillText("dB", barX + barW / 2, 3);
+
+  const imgData = cbCtx.createImageData(barW, barH);
+  for (let row = 0; row < barH; row++) {
+    const norm = 1 - row / (barH - 1);
+    const [r, g, b] = colormapInferno(norm);
+    for (let col = 0; col < barW; col++) {
+      const idx = (row * barW + col) * 4;
+      imgData.data[idx]     = r;
+      imgData.data[idx + 1] = g;
+      imgData.data[idx + 2] = b;
+      imgData.data[idx + 3] = 255;
+    }
+  }
+  cbCtx.putImageData(imgData, barX, barTop);
+
+  cbCtx.strokeStyle = "#3a3f4a";
+  cbCtx.lineWidth   = 1;
+  cbCtx.strokeRect(barX, barTop, barW, barH);
+
+  const dbTicks = [0, -20, -40, -60, -80];
+  cbCtx.font         = "9px Consolas, Menlo, monospace";
+  cbCtx.fillStyle    = "#6a6f7a";
+  cbCtx.strokeStyle  = "#6a6f7a";
+  cbCtx.lineWidth    = 1;
+  cbCtx.textAlign    = "left";
+  cbCtx.textBaseline = "middle";
+
+  for (const db of dbTicks) {
+    const norm = (db - DB_MIN) / (DB_MAX - DB_MIN);
+    const y    = barTop + (1 - norm) * barH;
+    cbCtx.beginPath();
+    cbCtx.moveTo(barX + barW,     y);
+    cbCtx.lineTo(barX + barW + 3, y);
+    cbCtx.stroke();
+    cbCtx.fillText(`${db}`, barX + barW + 5, y);
+  }
+}
+
+// =============================================================================
+// SBS Custom Scrollbar — mirrors single-mode scrollbar logic
+// =============================================================================
+function updateSbsScrollbar() {
+  if (!sbsPanelScrolls[0]) return;
+  const scrollW = sbsPanelScrolls[0].scrollWidth;
+  const clientW = sbsPanelScrolls[0].clientWidth;
+  const trackW  = sbsCustomScrollbar.clientWidth;
+  if (trackW === 0) return;
+
+  if (scrollW <= clientW) {
+    sbsCustomThumb.style.width = trackW + "px";
+    sbsCustomThumb.style.left  = "0px";
+    return;
+  }
+
+  const thumbW      = Math.max(24, Math.round((clientW / scrollW) * trackW));
+  const thumbRange  = trackW - thumbW;
+  const scrollFrac  = sbsPanelScrolls[0].scrollLeft / (scrollW - clientW);
+  sbsCustomThumb.style.width = thumbW + "px";
+  sbsCustomThumb.style.left  = Math.round(scrollFrac * thumbRange) + "px";
+}
+
+// Sync all panel scroll containers + x-axis wrapper to the same scrollLeft.
+// A guard flag prevents scroll event loops (A scrolls → syncs B → B fires scroll → ...).
+let sbsSyncingScroll = false;
+function syncSbsScroll(sl) {
+  if (sbsSyncingScroll) return;
+  sbsSyncingScroll = true;
+  sbsPanelScrolls.forEach((ps) => { ps.scrollLeft = sl; });
+  sbsXAxisWrapper.scrollLeft = sl;
+  updateSbsScrollbar();
+  sbsSyncingScroll = false;
+}
+
+sbsPanelScrolls.forEach((ps) => {
+  ps.addEventListener("scroll", () => syncSbsScroll(ps.scrollLeft));
+});
+window.addEventListener("resize", updateSbsScrollbar);
+
+let sbsThumbDragging = false;
+let sbsThumbDragStartX = 0;
+let sbsThumbDragStartScrollLeft = 0;
+
+function onSbsThumbDragStart(e) {
+  sbsThumbDragging = true;
+  const src = (e.touches && e.touches.length > 0) ? e.touches[0] : e;
+  sbsThumbDragStartX          = src.clientX;
+  sbsThumbDragStartScrollLeft = sbsPanelScrolls[0] ? sbsPanelScrolls[0].scrollLeft : 0;
+  sbsCustomThumb.classList.add("active");
+  document.addEventListener("mousemove", onSbsThumbDragMove);
+  document.addEventListener("mouseup",   onSbsThumbDragEnd);
+  document.addEventListener("touchmove", onSbsThumbDragMove, { passive: false });
+  document.addEventListener("touchend",  onSbsThumbDragEnd);
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+function onSbsThumbDragMove(e) {
+  if (!sbsThumbDragging) return;
+  e.preventDefault();
+  const src = (e.touches && e.touches.length > 0) ? e.touches[0] : e;
+  const dx         = src.clientX - sbsThumbDragStartX;
+  const trackW     = sbsCustomScrollbar.clientWidth;
+  const thumbW     = sbsCustomThumb.offsetWidth;
+  const thumbRange = trackW - thumbW;
+  if (thumbRange <= 0) return;
+  const ps0 = sbsPanelScrolls[0];
+  if (!ps0) return;
+  const scrollRange = ps0.scrollWidth - ps0.clientWidth;
+  const scrollDelta = dx * (scrollRange / thumbRange);
+  syncSbsScroll(Math.max(0, Math.min(scrollRange, sbsThumbDragStartScrollLeft + scrollDelta)));
+}
+
+function onSbsThumbDragEnd() {
+  sbsThumbDragging = false;
+  sbsCustomThumb.classList.remove("active");
+  document.removeEventListener("mousemove", onSbsThumbDragMove);
+  document.removeEventListener("mouseup",   onSbsThumbDragEnd);
+  document.removeEventListener("touchmove", onSbsThumbDragMove);
+  document.removeEventListener("touchend",  onSbsThumbDragEnd);
+}
+
+sbsCustomThumb.addEventListener("mousedown",  onSbsThumbDragStart);
+sbsCustomThumb.addEventListener("touchstart", onSbsThumbDragStart, { passive: false });
+
+sbsCustomScrollbar.addEventListener("click", (e) => {
+  if (e.target === sbsCustomThumb) return;
+  const rect      = sbsCustomScrollbar.getBoundingClientRect();
+  const clickX    = e.clientX - rect.left;
+  const thumbLeft = parseFloat(sbsCustomThumb.style.left) || 0;
+  const ps0       = sbsPanelScrolls[0];
+  if (!ps0) return;
+  const pageW     = ps0.clientWidth;
+  syncSbsScroll(ps0.scrollLeft + (clickX < thumbLeft ? -pageW : pageW));
+});
+
+// =============================================================================
+// SBS Zoom — synchronized zoom across all 4 panels
+// =============================================================================
+/**
+ * Attach synchronized zoom listeners to each .sbs-zoom-canvas.
+ * Zoom on any panel updates the shared viewState then re-renders all 4.
+ */
+let sbsIsZooming   = false;
+let sbsZoomStartX  = 0;
+let sbsZoomStartY  = 0;
+let sbsZoomActiveCanvas = null;  // the zoom canvas currently being dragged
+
+/**
+ * Detects a mobile double-tap (two touchend events within 300 ms) and calls
+ * handler().  Used to trigger zoom reset on devices where dblclick is unreliable.
+ */
+function addDoubleTap(element, handler) {
+  let lastTap = 0;
+  element.addEventListener("touchend", (e) => {
+    const now = Date.now();
+    if (now - lastTap < 300) {
+      e.preventDefault();
+      handler();
+      lastTap = 0;
+    } else {
+      lastTap = now;
+    }
+  });
+}
+
+sbsPanels.forEach((panel) => {
+  const zc = panel.querySelector(".sbs-zoom-canvas");
+  zc.addEventListener("mousedown",  onSbsZoomStart);
+  zc.addEventListener("touchstart", onSbsZoomStart, { passive: false });
+  zc.addEventListener("touchmove",  onSbsZoomMove,  { passive: false });
+  zc.addEventListener("touchend",   onSbsZoomEnd);
+  zc.addEventListener("dblclick",   resetSbsZoom);
+  addDoubleTap(zc, resetSbsZoom);
+  // Reset button inside each panel
+  panel.querySelector(".sbs-reset-btn").addEventListener("click", resetSbsZoom);
+});
+
+function syncSbsZoomCanvas(zc) {
+  const inner = zc.parentElement;  // .sbs-panel-inner
+  const w = inner.clientWidth;
+  const h = inner.clientHeight;
+  if (zc.width !== w || zc.height !== h) {
+    zc.width  = w;
+    zc.height = h;
+  }
+}
+
+function clampedSbsPos(e, zc) {
+  const pos = getEventPos(e, zc);
+  return {
+    x: Math.max(0, Math.min(zc.width,  pos.x)),
+    y: Math.max(0, Math.min(zc.height, pos.y)),
+  };
+}
+
+function onSbsZoomStart(e) {
+  if (!fullDbMatrices) return;
+  // In SBS scroll mode, let touch events pass through to the scroll container.
+  if (sbsScrollModeActive && e.touches) return;
+  e.preventDefault();
+  const zc = e.currentTarget;
+  syncSbsZoomCanvas(zc);
+  const pos = getEventPos(e, zc);
+  sbsZoomStartX = pos.x;
+  sbsZoomStartY = pos.y;
+  sbsIsZooming  = true;
+  sbsZoomActiveCanvas = zc;
+  document.addEventListener("mousemove", onSbsZoomMove);
+  document.addEventListener("mouseup",   onSbsZoomEnd);
+}
+
+function onSbsZoomMove(e) {
+  if (!sbsIsZooming || !sbsZoomActiveCanvas) return;
+  e.preventDefault();
+  const zc  = sbsZoomActiveCanvas;
+  syncSbsZoomCanvas(zc);
+  const w   = zc.width;
+  const h   = zc.height;
+  const pos = clampedSbsPos(e, zc);
+  const zCtx = zc.getContext("2d");
+
+  const rx = Math.min(sbsZoomStartX, pos.x);
+  const ry = Math.min(sbsZoomStartY, pos.y);
+  const rw = Math.abs(pos.x - sbsZoomStartX);
+  const rh = Math.abs(pos.y - sbsZoomStartY);
+
+  zCtx.clearRect(0, 0, w, h);
+  zCtx.fillStyle = "rgba(0,0,0,0.35)";
+  zCtx.fillRect(0,       0,      w,  ry);
+  zCtx.fillRect(0,       ry + rh, w,  h - ry - rh);
+  zCtx.fillRect(0,       ry,      rx, rh);
+  zCtx.fillRect(rx + rw, ry,      w - rx - rw, rh);
+
+  zCtx.strokeStyle = "#5a8fff";
+  zCtx.lineWidth   = 1.5;
+  zCtx.setLineDash([4, 2]);
+  zCtx.strokeRect(rx, ry, rw, rh);
+  zCtx.setLineDash([]);
+}
+
+function onSbsZoomEnd(e) {
+  document.removeEventListener("mousemove", onSbsZoomMove);
+  document.removeEventListener("mouseup",   onSbsZoomEnd);
+
+  if (!sbsIsZooming || !fullDbMatrices || !viewState) return;
+  sbsIsZooming = false;
+
+  const zc  = sbsZoomActiveCanvas;
+  sbsZoomActiveCanvas = null;
+  const w   = zc.width;
+  const h   = zc.height;
+  const pos = clampedSbsPos(e, zc);
+
+  const nx1 = Math.max(0, Math.min(sbsZoomStartX, pos.x) / w);
+  const nx2 = Math.min(1, Math.max(sbsZoomStartX, pos.x) / w);
+  const ny1 = Math.max(0, Math.min(sbsZoomStartY, pos.y) / h);
+  const ny2 = Math.min(1, Math.max(sbsZoomStartY, pos.y) / h);
+
+  if ((nx2 - nx1) < 0.02 || (ny2 - ny1) < 0.02) {
+    zc.getContext("2d").clearRect(0, 0, w, h);
+    return;
+  }
+
+  const curFrames = viewState.frameEnd - viewState.frameStart;
+  const curBins   = viewState.binEnd   - viewState.binStart;
+
+  const refMatrix = fullDbMatrices["hann"];
+
+  const newFrameStart = viewState.frameStart + Math.floor(nx1 * curFrames);
+  const newFrameEnd   = viewState.frameStart + Math.ceil(nx2  * curFrames);
+  const newBinEnd     = viewState.binEnd - Math.floor(ny1 * curBins);
+  const newBinStart   = viewState.binEnd - Math.ceil(ny2  * curBins);
+
+  viewState = {
+    frameStart: Math.max(0, newFrameStart),
+    frameEnd:   Math.min(refMatrix.length,      Math.max(newFrameEnd,  newFrameStart + 2)),
+    binStart:   Math.max(0, newBinStart),
+    binEnd:     Math.min(refMatrix[0].length,   Math.max(newBinEnd,    newBinStart   + 2)),
+  };
+
+  // Clear all zoom canvas overlays and show per-panel reset buttons
+  sbsPanels.forEach((p) => {
+    const z = p.querySelector(".sbs-zoom-canvas");
+    z.getContext("2d").clearRect(0, 0, z.width, z.height);
+    p.querySelector(".sbs-reset-btn").classList.remove("hidden");
+  });
+
+  renderSideBySide();
+}
+
+function resetSbsZoom() {
+  if (!fullDbMatrices) return;
+  const ref = fullDbMatrices["hann"];
+  viewState = {
+    frameStart: 0,
+    frameEnd:   ref.length,
+    binStart:   0,
+    binEnd:     ref[0].length,
+  };
+  sbsPanels.forEach((p) => {
+    const z = p.querySelector(".sbs-zoom-canvas");
+    z.getContext("2d").clearRect(0, 0, z.width, z.height);
+    p.querySelector(".sbs-reset-btn").classList.add("hidden");
+  });
+  renderSideBySide();
+}
+
+// =============================================================================
 // renderCurrentView — re-render the spectrogram for the current viewState
 // =============================================================================
 /**
@@ -1276,6 +1896,8 @@ function onZoomEnd(e) {
 // Double-click on the spectrogram area resets to the full view
 zoomCanvas.addEventListener("dblclick", resetZoom);
 resetZoomBtn.addEventListener("click",   resetZoom);
+// Mobile double-tap to reset zoom
+addDoubleTap(zoomCanvas, resetZoom);
 
 function resetZoom() {
   if (!fullDbMatrix) return;
@@ -1336,7 +1958,7 @@ function colormapInferno(v) {
 }
 
 // =============================================================================
-// Playback — startPlayback / stopPlayback / updateCursor / drawCursor
+// Playback — startPlayback / stopPlayback / updateCursor / updateCursorAllViews
 // =============================================================================
 
 /**
@@ -1376,8 +1998,10 @@ function startPlayback() {
     isPlaying = false;
     sourceNode = null;
     playBtn.textContent = "\u25B6 Play";
-    // Draw cursor at the very end position so it doesn't snap back to 0
-    drawCursor(audioDuration);
+    // Draw cursor at the very end position so it doesn't snap back to 0.
+    // getNormalizedTime() clamps to 1.0 at this point, placing the cursor at
+    // the right edge of every active spectrogram canvas.
+    updateCursorAllViews();
     // Stop the rAF loop — no more updates needed
     if (rafId !== null) {
       cancelAnimationFrame(rafId);
@@ -1386,8 +2010,9 @@ function startPlayback() {
   };
 
   sourceNode.start(0);
-  // Snap scroll to the beginning when play starts.
+  // Snap scroll to the beginning when play starts (both single and SBS modes).
   spectroScrollArea.scrollLeft = 0;
+  syncSbsScroll(0);
   rafId = requestAnimationFrame(updateCursor);
 }
 
@@ -1409,7 +2034,7 @@ function stopPlayback(clearCursor) {
     sourceNode = null;
   }
 
-  if (clearCursor) clearCursorCanvas();
+  if (clearCursor) clearAllCursors();
   playBtn.textContent = "\u25B6 Play";
 }
 
@@ -1422,8 +2047,11 @@ function stopPlayback(clearCursor) {
 function updateCursor() {
   if (!isPlaying) return;
 
+  // getNormalizedTime() uses the audio clock for sample-accurate positioning.
+  // updateCursorAllViews() then applies it to every active spectrogram canvas.
+  updateCursorAllViews();
+
   const elapsed = Math.min(audioCtx.currentTime - playStartTime, audioDuration);
-  drawCursor(elapsed);
   autoScrollToElapsed(elapsed);
 
   rafId = requestAnimationFrame(updateCursor);
@@ -1434,71 +2062,185 @@ function updateCursor() {
  * edge of the visible scroll area, advance the scroll position by exactly
  * one page width (like pressing PgDn).  The cursor will then appear near
  * the left edge of the new page and travel rightward again.
+ *
+ * Handles both single mode (spectroScrollArea) and side-by-side mode
+ * (all sbs-panel-scroll containers, kept in sync via syncSbsScroll).
  */
 function autoScrollToElapsed(elapsed) {
-  if (!viewState || !fullDbMatrix) return;
-  const tViewStart = CONFIG.startTime + viewState.frameStart * CONFIG.hopSize / sampleRate;
-  const tViewEnd   = CONFIG.startTime + viewState.frameEnd   * CONFIG.hopSize / sampleRate;
-  if (elapsed < tViewStart || elapsed > tViewEnd) return;
-  const canvasW  = spectroArea.clientWidth;
-  const x        = ((elapsed - tViewStart) / (tViewEnd - tViewStart)) * canvasW;
-  const pageW    = spectroScrollArea.clientWidth;
-  const scrollLeft = spectroScrollArea.scrollLeft;
-  if (x > scrollLeft + pageW) {
-    spectroScrollArea.scrollLeft = scrollLeft + pageW;
-  }
-}
+  const mode = comparisonModeSelect.value;
 
-/**
- * Draw a 1-pixel vertical cursor line on the overlay canvas at the position
- * corresponding to `elapsed` seconds into the audio.
- *
- * Time-to-pixel mapping:
- *   The spectrogram canvas has canvas.width = numFrames data columns, but is
- *   CSS-stretched to fill the full panel width (clientWidth px).
- *   The cursor overlay has the same CSS dimensions and is sized to clientWidth
- *   × clientHeight in device-independent pixels so the line is 1px wide.
- *
- *   x_css = (elapsed / audioDuration) × clientWidth
- *
- * The overlay dimensions are updated on every call to automatically handle
- * window resize without a separate ResizeObserver.
- *
- * @param {number} elapsed - Seconds elapsed since playback started
- */
-function drawCursor(elapsed) {
-  // Sync overlay canvas resolution to its CSS-rendered size.
-  const w = spectroArea.clientWidth;
-  const h = spectroArea.clientHeight;
-  if (cursorCanvas.width !== w || cursorCanvas.height !== h) {
-    cursorCanvas.width  = w;
-    cursorCanvas.height = h;
-  }
-
-  cursorCtx.clearRect(0, 0, w, h);
-
-  let x;
-  if (viewState && fullDbMatrix) {
-    // Zoom-aware mapping: position the cursor within the visible time window.
+  if (mode === "sidebyside") {
+    if (!viewState || !fullDbMatrices) return;
     const tViewStart = CONFIG.startTime + viewState.frameStart * CONFIG.hopSize / sampleRate;
     const tViewEnd   = CONFIG.startTime + viewState.frameEnd   * CONFIG.hopSize / sampleRate;
-    if (elapsed < tViewStart || elapsed > tViewEnd) return; // outside current view
-    x = ((elapsed - tViewStart) / (tViewEnd - tViewStart)) * w;
+    if (elapsed < tViewStart || elapsed > tViewEnd) return;
+    const firstInner = sbsPanelsRow.querySelector(".sbs-panel-inner");
+    if (!firstInner) return;
+    const innerW  = firstInner.clientWidth;
+    const x       = ((elapsed - tViewStart) / (tViewEnd - tViewStart)) * innerW;
+    const ps0     = sbsPanelScrolls[0];
+    if (!ps0) return;
+    const pageW   = ps0.clientWidth;
+    if (x > ps0.scrollLeft + pageW) {
+      syncSbsScroll(ps0.scrollLeft + pageW);
+    }
   } else {
-    x = (elapsed / audioDuration) * w;
+    if (!viewState || !fullDbMatrix) return;
+    const tViewStart = CONFIG.startTime + viewState.frameStart * CONFIG.hopSize / sampleRate;
+    const tViewEnd   = CONFIG.startTime + viewState.frameEnd   * CONFIG.hopSize / sampleRate;
+    if (elapsed < tViewStart || elapsed > tViewEnd) return;
+    const canvasW  = spectroArea.clientWidth;
+    const x        = ((elapsed - tViewStart) / (tViewEnd - tViewStart)) * canvasW;
+    const pageW    = spectroScrollArea.clientWidth;
+    const scrollLeft = spectroScrollArea.scrollLeft;
+    if (x > scrollLeft + pageW) {
+      spectroScrollArea.scrollLeft = scrollLeft + pageW;
+    }
   }
+}
 
-  cursorCtx.beginPath();
-  cursorCtx.moveTo(x, 0);
-  cursorCtx.lineTo(x, h);
-  cursorCtx.strokeStyle = "#ff3333";
-  cursorCtx.lineWidth   = 1.5;
-  cursorCtx.stroke();
+// =============================================================================
+// Cursor system — mode-independent timeline marker
+// =============================================================================
+//
+// Design:
+//   The cursor is decoupled from renderSpectrogram() so spectrogram data only
+//   needs to be painted once (expensive), while the cursor updates at display
+//   rate (~60 fps) in a separate lightweight pass.
+//
+//   A single normalised time value [0, 1] is the sole source of truth.  All
+//   cursor canvases — regardless of how many are visible — derive their pixel
+//   x coordinate from this value via a shared mapping function.  This makes
+//   adding or removing canvases trivial and guarantees pixel-perfect sync.
+
+/**
+ * Returns current playback position normalised to [0, 1] over audioDuration.
+ * Uses the Web Audio hardware clock (audioCtx.currentTime) for sample-accurate
+ * synchronisation, clamped so the cursor never overshoots the end.
+ *
+ * @returns {number} normalised time in [0, 1]
+ */
+function getNormalizedTime() {
+  if (!audioCtx || !audioDuration) return 0;
+  const elapsed = Math.min(audioCtx.currentTime - playStartTime, audioDuration);
+  return elapsed / audioDuration;
 }
 
 /**
- * Erase the cursor overlay entirely (called on stop or new file load).
+ * Maps a normalised time value to an x pixel coordinate within a scrollable
+ * content element (spectroArea in single mode, .sbs-panel-inner in SBS mode).
+ *
+ * Normalised time is used rather than raw seconds so the mapping is independent
+ * of the total duration — the same formula works whether the clip is 1 s or 10 s.
+ *
+ * The mapping is zoom-aware: when viewState restricts the visible time range,
+ * the cursor is positioned relative to that sub-window so it always aligns with
+ * the currently displayed spectrogram content.
+ *
+ * @param {HTMLElement} contentEl      - The scrollable content element whose
+ *                                       clientWidth defines the pixel space.
+ * @param {number}      normalizedTime - Current time / duration, clamped to [0, 1].
+ * @returns {number|null} x pixel position, or null if outside the current view.
  */
-function clearCursorCanvas() {
+function mapTimeToX(contentEl, normalizedTime) {
+  const w = contentEl.clientWidth;
+  if (!w) return null;
+
+  // Convert back to seconds for the zoom-window comparison.
+  const elapsed = normalizedTime * audioDuration;
+
+  if (viewState && sampleRate) {
+    // Zoom-aware: map elapsed into the currently visible time sub-window.
+    const tViewStart = CONFIG.startTime + viewState.frameStart * CONFIG.hopSize / sampleRate;
+    const tViewEnd   = CONFIG.startTime + viewState.frameEnd   * CONFIG.hopSize / sampleRate;
+    if (elapsed < tViewStart - 1e-9 || elapsed > tViewEnd + 1e-9) return null;
+    return ((elapsed - tViewStart) / (tViewEnd - tViewStart)) * w;
+  }
+
+  // No zoom: simple full-range mapping.
+  return normalizedTime * w;
+}
+
+/**
+ * Draws a vertical cursor line on a dedicated overlay canvas.
+ *
+ * The overlay canvas is positioned absolutely inside a scrollable content
+ * element (contentEl) so the cursor travels with the content as the user
+ * scrolls — just like the spectrogram pixels beneath it.  The canvas
+ * dimensions are synced to contentEl on every call to handle resize.
+ *
+ * @param {HTMLCanvasElement} cursorCvs    - The cursor overlay canvas to draw on.
+ * @param {HTMLElement}       contentEl   - The parent scrollable content element.
+ * @param {number}            normalizedTime - Normalised playback position [0, 1].
+ */
+function drawCursorOnCanvas(cursorCvs, contentEl, normalizedTime) {
+  const w = contentEl.clientWidth;
+  const h = contentEl.clientHeight;
+  if (!w || !h) return;
+
+  // Sync canvas resolution to the content element dimensions.
+  // This automatically handles resize without a separate ResizeObserver.
+  if (cursorCvs.width !== w || cursorCvs.height !== h) {
+    cursorCvs.width  = w;
+    cursorCvs.height = h;
+  }
+
+  const cCtx = cursorCvs.getContext("2d");
+  cCtx.clearRect(0, 0, w, h);
+
+  const x = mapTimeToX(contentEl, normalizedTime);
+  if (x === null) return;  // cursor is outside the visible time window
+
+  cCtx.beginPath();
+  cCtx.moveTo(x, 0);
+  cCtx.lineTo(x, h);
+  cCtx.strokeStyle = "#ff3333";
+  cCtx.lineWidth   = 1.5;
+  cCtx.stroke();
+}
+
+/**
+ * Redraws the cursor on ALL active spectrogram canvases for the current mode.
+ *
+ * Multi-canvas synchronisation: rather than having each render path manage its
+ * own cursor, this function is the single place that iterates all active canvases
+ * and calls drawCursorOnCanvas() for each.  Adding a new display mode only
+ * requires adding a branch here — no other cursor code needs to change.
+ *
+ * Called on every requestAnimationFrame tick during playback.
+ */
+function updateCursorAllViews() {
+  const normalizedTime = getNormalizedTime();
+  const mode = comparisonModeSelect.value;
+
+  if (mode === "sidebyside") {
+    // Side-by-side: 4 independent panels, each with its own cursor canvas.
+    // The same normalizedTime drives all 4 so they stay perfectly in sync.
+    sbsPanels.forEach((panel) => {
+      const cursorCvs = panel.querySelector(".sbs-cursor-canvas");
+      const inner     = panel.querySelector(".sbs-panel-inner");
+      if (cursorCvs && inner) {
+        drawCursorOnCanvas(cursorCvs, inner, normalizedTime);
+      }
+    });
+  } else {
+    // Single and overlay modes share the main #cursorCanvas over #spectroArea.
+    drawCursorOnCanvas(cursorCanvas, spectroArea, normalizedTime);
+  }
+}
+
+/**
+ * Erases the cursor from all canvas overlays.
+ * Called on explicit stop or when a new file is loaded.
+ */
+function clearAllCursors() {
+  // Main single-mode cursor canvas
   cursorCtx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
+  // All SBS panel cursor canvases
+  sbsPanels.forEach((panel) => {
+    const cursorCvs = panel.querySelector(".sbs-cursor-canvas");
+    if (cursorCvs) {
+      cursorCvs.getContext("2d").clearRect(0, 0, cursorCvs.width, cursorCvs.height);
+    }
+  });
 }

@@ -122,6 +122,44 @@
         </div>
       </div>
 
+      <!-- Comparison mode — controls how STFT results are displayed.
+           Window A / B selectors are shown only for the Overlay Slider mode
+           (where two windows are painted on stacked canvases and clipped by
+           a draggable divider).  They are hidden for Single and Side-by-Side. -->
+      <div class="sidebar-section">
+        <div class="section-label">COMPARISON</div>
+
+        <div class="field">
+          <label class="field-label" for="comparisonMode">Mode</label>
+          <select id="comparisonMode">
+            <option value="single"    selected>Single</option>
+            <option value="sidebyside">Side-by-Side</option>
+            <option value="overlay">Overlay Slider</option>
+          </select>
+        </div>
+
+        <!-- Window A / B: visible only in Overlay Slider mode -->
+        <div class="field hidden" id="windowAField">
+          <label class="field-label" for="windowA">Window A</label>
+          <select id="windowA">
+            <option value="rectangular">Rectangular</option>
+            <option value="hann" selected>Hann</option>
+            <option value="hamming">Hamming</option>
+            <option value="blackman">Blackman</option>
+          </select>
+        </div>
+
+        <div class="field hidden" id="windowBField">
+          <label class="field-label" for="windowB">Window B</label>
+          <select id="windowB">
+            <option value="rectangular">Rectangular</option>
+            <option value="hann">Hann</option>
+            <option value="hamming" selected>Hamming</option>
+            <option value="blackman">Blackman</option>
+          </select>
+        </div>
+      </div>
+
       <!-- Run button — full width of sidebar, styled as a functional control -->
       <div class="sidebar-section">
         <button class="section-icon-btn" data-action="run" title="Run STFT">&#9654;</button>
@@ -202,6 +240,96 @@
           </div>
 
         </div>
+
+        <!--
+          sbsContainer: side-by-side comparison layout.
+          Each panel has its own scroll area; scroll is synchronized via JS.
+          Hidden until side-by-side mode is active and Run is pressed.
+        -->
+        <div id="sbsContainer" class="hidden">
+
+          <!-- Shared Y-axis (frequency) — drawn by renderSbsAxes() -->
+          <canvas id="sbsYAxisCanvas"></canvas>
+
+          <!-- sbsMain: flex column holding the 2×2 panel grid + shared x-axis -->
+          <div id="sbsMain">
+
+            <!-- Mobile-only: toggle between scroll and zoom interaction modes.
+                 Visible only on mobile via CSS. On desktop this is hidden. -->
+            <button id="sbsScrollModeBtn">&#8660; Scroll mode: tap to drag-zoom</button>
+
+            <!-- 2-column × 2-row grid of spectrogram panels -->
+            <div id="sbsPanelsRow">
+
+              <div class="sbs-panel" data-window="rectangular">
+                <div class="sbs-panel-title">Rectangular</div>
+                <div class="sbs-panel-scroll">
+                  <div class="sbs-panel-inner">
+                    <canvas class="sbs-canvas"></canvas>
+                    <canvas class="sbs-cursor-canvas"></canvas>
+                    <canvas class="sbs-zoom-canvas"></canvas>
+                    <button class="sbs-reset-btn hidden" title="Double-tap to reset zoom">&#8862; Reset</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="sbs-panel" data-window="hann">
+                <div class="sbs-panel-title">Hann</div>
+                <div class="sbs-panel-scroll">
+                  <div class="sbs-panel-inner">
+                    <canvas class="sbs-canvas"></canvas>
+                    <canvas class="sbs-cursor-canvas"></canvas>
+                    <canvas class="sbs-zoom-canvas"></canvas>
+                    <button class="sbs-reset-btn hidden" title="Double-tap to reset zoom">&#8862; Reset</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="sbs-panel" data-window="hamming">
+                <div class="sbs-panel-title">Hamming</div>
+                <div class="sbs-panel-scroll">
+                  <div class="sbs-panel-inner">
+                    <canvas class="sbs-canvas"></canvas>
+                    <canvas class="sbs-cursor-canvas"></canvas>
+                    <canvas class="sbs-zoom-canvas"></canvas>
+                    <button class="sbs-reset-btn hidden" title="Double-tap to reset zoom">&#8862; Reset</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="sbs-panel" data-window="blackman">
+                <div class="sbs-panel-title">Blackman</div>
+                <div class="sbs-panel-scroll">
+                  <div class="sbs-panel-inner">
+                    <canvas class="sbs-canvas"></canvas>
+                    <canvas class="sbs-cursor-canvas"></canvas>
+                    <canvas class="sbs-zoom-canvas"></canvas>
+                    <button class="sbs-reset-btn hidden" title="Double-tap to reset zoom">&#8862; Reset</button>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- Shared X-axis (time) — synced to panel scroll via JS -->
+            <div id="sbsXAxisWrapper">
+              <canvas id="sbsXAxisCanvas"></canvas>
+            </div>
+
+          </div>
+
+          <!-- Shared colorbar -->
+          <div id="sbsColorbarArea">
+            <canvas id="sbsColorbarCanvas"></canvas>
+          </div>
+
+          <!-- Custom scrollbar synchronized across all sbs panels -->
+          <div id="sbsCustomScrollbar">
+            <div id="sbsCustomThumb"></div>
+          </div>
+
+        </div>
+
       </div>
 
     </main>

@@ -130,6 +130,11 @@ body {
   overflow: hidden;
 }
 
+/* Hidden fields collapse completely — toggled by handleComparisonMode() */
+.field.hidden {
+  display: none;
+}
+
 .field-label {
   font-size: 11px;
   color: #9aa0ad;
@@ -222,6 +227,11 @@ select:focus {
   border-color: #5a8fff;
   outline: 1px solid #5a8fff;
   outline-offset: 0;
+}
+
+select:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 /* ── Number inputs ──────────────────────────────────────────────────────── */
@@ -484,11 +494,12 @@ input[type="number"]:focus {
 /* Canvas wrapper: fixed-height spectrogram grid sits inside here */
 #canvasWrapper {
   position: relative;
-  flex: 0 0 auto;
+  flex: 1;
+  height: 0;          /* flex:1 overrides this to fill #mainPanel; 0 prevents content blowout */
   display: flex;
   flex-direction: column;
-  min-height: 350px;   /* spectroGrid fixed height so placeholder centres */
-  overflow: visible;
+  min-height: 200px;
+  overflow: hidden;
 }
 
 /* Placeholder text shown before first render */
@@ -617,10 +628,10 @@ input[type="number"]:focus {
 #spectroGrid {
   display: grid;
   grid-template-columns: 60px 1fr 58px;
-  grid-template-rows: 1fr 36px 14px;   /* data | x-axis | custom scrollbar */
-  height: 350px;    /* fixed: 300 px data + 36 px x-axis + 14 px scrollbar */
-  flex-shrink: 0;
+  grid-template-rows: 1fr 36px 14px;
+  flex: 1;
   min-width: 0;
+  min-height: 0;
 }
 
 #spectroGrid.hidden {
@@ -712,6 +723,172 @@ input[type="number"]:focus {
   border-top: 1px solid #2e3138;
 }
 
+/* ── Side-by-side comparison container ─────────────────────────────────── */
+/*
+ * Mirrors the structure of #spectroGrid but holds 4 panels arranged in a
+ * 2×2 grid.  The layout is:
+ *   [y-axis 60px] [scroll area 1fr] [colorbar 58px]
+ *   row 1: panel row (1fr)
+ *   row 2: x-axis (36px)
+ *   row 3: custom scrollbar (14px)
+ */
+#sbsContainer {
+  display: grid;
+  grid-template-columns: 60px 1fr 58px;
+  grid-template-rows: 1fr 36px 14px;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+#sbsContainer.hidden {
+  display: none;
+}
+
+#sbsYAxisCanvas      { grid-column: 1; grid-row: 1; display: block; width: 100%; height: 100%; border-right: 1px solid #2e3138; }
+#sbsMain             { grid-column: 2; grid-row: 1 / 3; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+#sbsColorbarArea     { grid-column: 3; grid-row: 1; display: flex; flex-direction: column; overflow: hidden; border-left: 1px solid #2e3138; }
+#sbsCustomScrollbar  { grid-column: 2; grid-row: 3; position: relative; background: #1a1d23; border-top: 1px solid #2e3138; cursor: pointer; user-select: none; }
+
+#sbsColorbarCanvas {
+  display: block;
+  width: 100%;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* 2-column grid of panels (fills the scroll area) */
+#sbsPanelsRow {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 3px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sbs-panel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #2e3138;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sbs-panel-title {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: #6a6f7a;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 4px;
+  background: #1a1d23;
+  border-bottom: 1px solid #2e3138;
+}
+
+/* Per-panel horizontal scroll container — synced via JS */
+.sbs-panel-scroll {
+  flex: 1;
+  overflow-x: scroll;
+  overflow-y: hidden;
+  min-height: 0;
+}
+.sbs-panel-scroll::-webkit-scrollbar { display: none; }
+.sbs-panel-scroll { scrollbar-width: none; }
+
+/* Scrollable content area; width set by JS from pxPerSec */
+.sbs-panel-inner {
+  position: relative;
+  height: 100%;
+}
+
+.sbs-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+/* Cursor overlay for each SBS panel. Mirrors #cursorCanvas behaviour.
+ * Sits above the spectrogram (z-index 3) but below nothing that needs
+ * pointer events — pointer-events:none lets the zoom canvas underneath
+ * receive all mouse/touch input. */
+.sbs-cursor-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.sbs-zoom-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  z-index: 4;
+}
+
+/* Wrapper scrolls in sync with .sbs-panel-scroll (native scrollbar hidden) */
+#sbsXAxisWrapper {
+  flex-shrink: 0;
+  height: 36px;
+  overflow-x: scroll;
+  overflow-y: hidden;
+  border-top: 1px solid #2e3138;
+}
+#sbsXAxisWrapper::-webkit-scrollbar { display: none; }
+#sbsXAxisWrapper { scrollbar-width: none; }
+
+#sbsXAxisCanvas {
+  display: block;
+  height: 36px;
+}
+
+/* Per-panel zoom reset button */
+.sbs-reset-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 10;
+  background: rgba(26, 29, 35, 0.88);
+  color: #9aa0ad;
+  border: 1px solid #3a3f4a;
+  border-radius: 2px;
+  padding: 2px 6px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.sbs-reset-btn:hover { color: #5a8fff; border-color: #5a8fff; }
+.sbs-reset-btn.hidden { display: none; }
+
+#sbsCustomThumb {
+  position: absolute;
+  top: 2px;
+  height: 10px;
+  min-width: 24px;
+  background: #4a5060;
+  border-radius: 3px;
+  cursor: grab;
+  transition: background 0.15s;
+}
+
+#sbsCustomThumb:hover  { background: #5a8fff; }
+#sbsCustomThumb.active { background: #5a8fff; cursor: grabbing; }
+
+/* Mobile scroll/zoom toggle — hidden on desktop, shown as a bar on mobile */
+#sbsScrollModeBtn {
+  display: none;
+}
+
 /* ── Responsive: mobile (single-column stacked layout) ─────────────────── */
 /*
  * On narrow screens the sidebar stacks above the spectrogram.
@@ -763,9 +940,14 @@ input[type="number"]:focus {
   }
 
   #mainPanel {
-    height: auto;       /* let the fixed-height spectroGrid define the size */
-    min-height: 370px;  /* 350 px grid + 2×10 px vertical padding */
+    height: auto;
     overflow: visible;
+  }
+
+  #canvasWrapper {
+    flex: none;         /* don't stretch infinitely in auto-height parent */
+    height: 350px;      /* explicit definite height so spectroGrid fr-rows resolve */
+    min-height: 350px;
   }
 
   /* Mobile collapsed: convert the sidebar to a compact horizontal icon bar */
@@ -799,5 +981,70 @@ input[type="number"]:focus {
 
   #app.sidebar-collapsed .section-icon-btn {
     padding: 8px 10px;
+  }
+
+  /* SBS: stack panels vertically instead of 2×2 grid */
+  #sbsContainer {
+    display: flex;              /* override desktop display:grid */
+    flex-direction: column;
+    height: auto;
+    overflow-y: auto;
+  }
+
+  #sbsYAxisCanvas,
+  #sbsColorbarArea,
+  #sbsCustomScrollbar {
+    display: none;   /* hidden on mobile — each panel scrolls independently */
+  }
+
+  #sbsMain {
+    grid-column: unset;
+    grid-row: unset;
+    overflow: visible;
+    min-height: 0;
+  }
+
+  #sbsPanelsRow {
+    display: flex;              /* override desktop display:grid */
+    flex-direction: column;
+    grid-template-columns: unset;
+    grid-template-rows: unset;
+    gap: 6px;
+    overflow: visible;
+  }
+
+  .sbs-panel {
+    min-height: 220px;  /* each panel gets its own comfortable height */
+    height: auto;
+  }
+
+  .sbs-panel-inner {
+    height: 180px;  /* fixed drawing height for each panel on mobile */
+  }
+
+  #sbsXAxisWrapper {
+    display: none;   /* per-panel x-axis not available in list layout */
+  }
+
+  /* Mobile scroll/zoom toggle bar — shown above the panels list */
+  #sbsScrollModeBtn {
+    display: block;
+    width: 100%;
+    padding: 7px 10px;
+    font-size: 11px;
+    font-family: inherit;
+    background: #1e2129;
+    color: #9aa0ad;
+    border: none;
+    border-bottom: 1px solid #2e3138;
+    cursor: pointer;
+    text-align: left;
+    flex-shrink: 0;
+    letter-spacing: 0.05em;
+  }
+
+  #sbsScrollModeBtn.active {
+    color: #e6e6e6;
+    background: rgba(30, 74, 154, 0.85);
   }
 }
