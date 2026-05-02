@@ -43,6 +43,7 @@
         <span class="title-main">STFT Viewer</span>
         <!-- Mobile-only hint shown after Run — sits right beside the collapse button -->
         <span id="collapseHint" class="collapse-hint hidden">&#9650; collapse</span>
+        <button id="infoBtn" class="btn-info" title="How to use">&#x3F;</button>
         <button id="sidebarToggle" class="btn-collapse" title="Collapse sidebar">&#xAB;</button>
       </div>
 
@@ -336,11 +337,151 @@
 
   </div>
 
+  <!-- ── Info modal ────────────────────────────────────────────────────────── -->
+  <div id="infoModal" class="info-modal hidden" role="dialog" aria-modal="true" aria-labelledby="infoModalTitle">
+    <div class="info-modal-box">
+      <div class="info-modal-header">
+        <span id="infoModalTitle" class="info-modal-title">STFT Spectrogram Viewer — How it works</span>
+        <button id="infoCloseBtn" class="info-modal-close" title="Close">&#x2715;</button>
+      </div>
+      <div class="info-modal-body">
+
+        <section class="info-section">
+          <h2 class="info-h2">What is this?</h2>
+          <p>
+            A browser-based <strong>Short-Time Fourier Transform (STFT)</strong> spectrogram viewer.
+            It decodes any audio file (or live microphone recording) into a 2-D time–frequency
+            heatmap, coloured with the Inferno palette: dark blue = silence, yellow/white = peak
+            energy. All processing happens locally in your browser — no server, no upload.
+          </p>
+        </section>
+
+        <section class="info-section">
+          <h2 class="info-h2">Quick start</h2>
+          <ol class="info-ol">
+            <li><strong>Load audio</strong> — click <kbd>Browse…</kbd> to pick a local audio file
+                (MP3, WAV, OGG, M4A, …), <em>or</em> press <kbd>&#9679; Record</kbd> to capture
+                microphone audio directly. Stop recording with <kbd>&#9632; Stop</kbd>.</li>
+            <li><strong>Adjust parameters</strong> (optional) — tweak Frame Size, Hop Size, Window,
+                and the time range in the PARAMETERS panel.</li>
+            <li><strong>Run</strong> — press <kbd>&#9654; Run</kbd>. The spectrogram appears in
+                the main panel.</li>
+            <li><strong>Explore</strong> — scroll the spectrogram horizontally, zoom in by dragging
+                a rectangle, and double-click (or press <kbd>&#8862; Reset</kbd>) to zoom back out.</li>
+            <li><strong>Play</strong> — press <kbd>&#9654; Play</kbd> to listen while a red cursor
+                line tracks position in real time.</li>
+          </ol>
+        </section>
+
+        <section class="info-section">
+          <h2 class="info-h2">Parameters explained</h2>
+          <table class="info-table">
+            <thead>
+              <tr><th>Parameter</th><th>What it controls</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>Sample Rate (Hz)</code></td>
+                <td>Target analysis sample rate. Audio is resampled to this rate if it differs
+                    from the file's native rate. Higher = more high-frequency detail.</td>
+              </tr>
+              <tr>
+                <td><code>Frame Size</code></td>
+                <td>FFT window length in samples (must be a power of 2: 128, 256, 512 …).
+                    Larger = finer frequency resolution but coarser time resolution.</td>
+              </tr>
+              <tr>
+                <td><code>Hop Size</code></td>
+                <td>Step between successive frames in samples. Smaller than Frame Size gives
+                    overlapping frames and a smoother, denser spectrogram along the time axis.</td>
+              </tr>
+              <tr>
+                <td><code>Window</code></td>
+                <td>
+                  Windowing function applied to each frame before the FFT, controlling
+                  spectral leakage vs. resolution trade-off:
+                  <ul class="info-ul">
+                    <li><strong>Rectangular</strong> — no windowing; sharpest frequency resolution but
+                        highest sidelobe leakage.</li>
+                    <li><strong>Hann</strong> — smooth roll-off; good general-purpose choice for speech
+                        and music.</li>
+                    <li><strong>Hamming</strong> (default) — slightly better sidelobe rejection than Hann;
+                        standard in speech processing.</li>
+                    <li><strong>Blackman</strong> — lowest sidelobe levels; best for detecting weak
+                        components next to strong ones, at the cost of wider main lobe.</li>
+                  </ul>
+                </td>
+              </tr>
+              <tr>
+                <td><code>Start Time (s)</code></td>
+                <td>Offset into the audio file at which analysis begins.</td>
+              </tr>
+              <tr>
+                <td><code>Segment Duration (s)</code></td>
+                <td>Length of audio to analyse (max 10 s per run).</td>
+              </tr>
+              <tr>
+                <td><code>Time Scale (px/s)</code></td>
+                <td>Horizontal zoom of the spectrogram canvas — pixels per second.
+                    Increase to spread out the time axis; scroll right to see the rest.</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="info-section">
+          <h2 class="info-h2">Spectrogram display</h2>
+          <ul class="info-ul">
+            <li><strong>X-axis</strong> — time in seconds from the chosen Start Time.</li>
+            <li><strong>Y-axis</strong> — frequency in Hz (0 Hz at bottom, Nyquist at top).</li>
+            <li><strong>Colour</strong> — power in dB, normalised so the loudest bin = 0 dB.
+                The floor is −80 dB. Colours follow the Inferno palette
+                (dark blue → purple → orange → yellow).</li>
+            <li><strong>Colorbar</strong> — scale reference on the right edge of the panel.</li>
+          </ul>
+        </section>
+
+        <section class="info-section">
+          <h2 class="info-h2">Zoom &amp; scroll</h2>
+          <ul class="info-ul">
+            <li><strong>Drag</strong> on the spectrogram to draw a zoom rectangle
+                (crosshair cursor).</li>
+            <li><strong>Double-click</strong> the spectrogram or press <kbd>&#8862; Reset</kbd>
+                to return to the full view.</li>
+            <li>On mobile, the <kbd>&#8660; Scroll</kbd> toggle switches between pan and
+                zoom interaction modes.</li>
+          </ul>
+        </section>
+
+        <section class="info-section">
+          <h2 class="info-h2">Comparison mode</h2>
+          <p>
+            Set <em>Mode</em> to <strong>Side-by-Side</strong> and press Run to display four
+            spectrograms simultaneously — one for each window function
+            (Rectangular, Hann, Hamming, Blackman). Panels share the same frequency axis
+            and scroll in sync, so window-function effects are directly comparable.
+          </p>
+        </section>
+
+        <section class="info-section">
+          <h2 class="info-h2">Sidebar collapse</h2>
+          <p>
+            Press <kbd>&#xAB;</kbd> (top-right of the sidebar) to collapse the control panel and
+            give the spectrogram more horizontal space. Click any icon to expand a specific
+            section, or press <kbd>&#xBB;</kbd> to fully restore the sidebar.
+          </p>
+        </section>
+
+      </div><!-- /.info-modal-body -->
+    </div><!-- /.info-modal-box -->
+  </div><!-- /#infoModal -->
+
   <script src="script.js"></script>
   <script>
     document.getElementById('mobileNoticeDismiss').addEventListener('click', function () {
       document.getElementById('mobileNotice').classList.add('hidden');
     });
   </script>
+
 </body>
 </html>

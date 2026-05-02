@@ -2583,3 +2583,33 @@ async function processRecordedAudio(blob) {
 // ── Event listeners ──────────────────────────────────────────────────────────
 startRecBtn.addEventListener("click", startRecording);
 stopRecBtn.addEventListener("click",  stopRecording);
+
+// ── Info modal ───────────────────────────────────────────────────────────────
+const infoBtn    = document.getElementById("infoBtn");
+const infoModal  = document.getElementById("infoModal");
+const infoCloseBtn = document.getElementById("infoCloseBtn");
+
+function openInfoModal() {
+  infoModal.classList.remove("hidden");
+  infoCloseBtn.focus();
+}
+
+function closeInfoModal() {
+  infoModal.classList.add("hidden");
+  infoBtn.focus();
+}
+
+infoBtn.addEventListener("click", openInfoModal);
+infoCloseBtn.addEventListener("click", closeInfoModal);
+
+// Close on backdrop click (click outside the modal box)
+infoModal.addEventListener("click", function (e) {
+  if (e.target === infoModal) closeInfoModal();
+});
+
+// Close on Escape key
+document.addEventListener("keydown", function (e) {
+  if (e.key === "Escape" && !infoModal.classList.contains("hidden")) {
+    closeInfoModal();
+  }
+});
