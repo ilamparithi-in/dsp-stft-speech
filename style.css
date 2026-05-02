@@ -1099,3 +1099,93 @@ input[type="number"]:focus {
     display: none;
   }
 }
+
+/* ── Microphone recording controls ────────────────────────────────────────── */
+
+/* Row holding Record + Stop buttons */
+.rec-controls {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+/* Shared base for both rec buttons — matches .btn-file sizing */
+.btn-rec-start,
+.btn-rec-stop {
+  flex: 1;
+  padding: 4px 6px;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  border: 1px solid #3a3f4a;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+/* Record button: red accent when enabled */
+.btn-rec-start {
+  background: #2a1a1a;
+  color: #cc3333;
+  border-color: #5a2a2a;
+}
+.btn-rec-start:not(:disabled):hover {
+  background: #3a2020;
+  color: #ff4444;
+  border-color: #884444;
+}
+
+/* Stop button: neutral when enabled, dimmed when disabled */
+.btn-rec-stop {
+  background: #1e2228;
+  color: #9aa0ad;
+  border-color: #3a3f4a;
+}
+.btn-rec-stop:not(:disabled):hover {
+  background: #252930;
+  color: #c8d0dc;
+  border-color: #5a6070;
+}
+
+/* Disabled state for both */
+.btn-rec-start:disabled,
+.btn-rec-stop:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Pulsing animation used on Record button while recording */
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+.btn-rec-start.recording {
+  animation: rec-pulse 1s ease-in-out infinite;
+  color: #ff2222;
+  border-color: #882222;
+}
+
+/* Status text: Idle / Recording… / Processing… */
+.rec-status {
+  font-family: inherit;
+  font-size: 11px;
+  color: #6a6f7a;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+.rec-status.active {
+  color: #ff5555;
+}
+.rec-status.processing {
+  color: #4a90d9;
+}
+
+/* Elapsed timer */
+.rec-timer {
+  font-family: Consolas, Menlo, monospace;
+  font-size: 12px;
+  color: #9aa0ad;
+  letter-spacing: 0.06em;
+}
+.rec-timer.hidden {
+  display: none;
+}

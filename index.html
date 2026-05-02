@@ -62,6 +62,24 @@
         </div>
       </div>
 
+      <!-- ── Microphone recording ── -->
+      <div class="sidebar-section">
+        <button class="section-icon-btn" data-action="expand" title="Microphone recording">&#9679;</button>
+        <div class="section-label">RECORD</div>
+
+        <div class="field">
+          <!-- Record / Stop buttons sit side-by-side in one row -->
+          <div class="rec-controls">
+            <button id="startRecBtn" class="btn-rec-start" type="button">&#9679; Record</button>
+            <button id="stopRecBtn"  class="btn-rec-stop"  type="button" disabled>&#9632; Stop</button>
+          </div>
+          <!-- Status indicator: Idle / Recording… / Processing… -->
+          <div id="recStatus" class="rec-status">Idle</div>
+          <!-- Elapsed timer — hidden until recording starts -->
+          <div id="recTimer" class="rec-timer hidden">0.0 s</div>
+        </div>
+      </div>
+
       <div class="sidebar-section">
         <button class="section-icon-btn" data-action="expand" title="Parameters">&#8801;</button>
         <div class="section-label">PARAMETERS</div>

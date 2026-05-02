@@ -67,6 +67,11 @@ const spectroCustomScrollbar = document.getElementById("spectroCustomScrollbar")
 const spectroCustomThumb    = document.getElementById("spectroCustomThumb");     // custom scrollbar thumb
 const collapseHint          = document.getElementById("collapseHint");           // mobile post-Run hint
 const appEl                 = document.getElementById("app");                    // root grid element
+// Microphone recording controls
+const startRecBtn  = document.getElementById("startRecBtn");
+const stopRecBtn   = document.getElementById("stopRecBtn");
+const recStatus    = document.getElementById("recStatus");
+const recTimer     = document.getElementById("recTimer");
 // Comparison mode controls
 const comparisonModeSelect  = document.getElementById("comparisonMode");
 const windowAField          = document.getElementById("windowAField");  // wrapper div
@@ -300,13 +305,7 @@ processBtn.addEventListener("click", async () => {
   // Values are NOT clamped here — invalid inputs (NaN, non-power-of-2, etc.)
   // are caught and reported by the computation layer (prepareSegment /
   // computeSTFT), keeping all validation logic in one place.
-  CONFIG.targetSampleRate = Math.max(1, parseInt(sampleRateInput.value, 10) || 48000);
-  CONFIG.frameSize       = parseInt(frameSizeInput.value,   10);
-  CONFIG.hopSize         = parseInt(hopSizeInput.value,     10);
-  CONFIG.windowType      = windowSelect.value;
-  CONFIG.startTime       = parseFloat(startTimeInput.value);
-  CONFIG.segmentDuration = parseFloat(segDurationInput.value);
-  CONFIG.pxPerSec        = Math.max(10, parseFloat(timeScaleInput.value) || 150);
+  readConfigFromUI();
 
   processBtn.disabled = true;
   showStatus("Decoding audio…", false);
@@ -315,110 +314,8 @@ processBtn.addEventListener("click", async () => {
     // ── Step 1: decode ──────────────────────────────────────────────────────
     monoSamples = await loadAudio(file);
 
-    // Display audio metadata now that duration and sample rate are known.
-    // The user needs these values to set sensible startTime / segmentDuration.
-    infoDuration.textContent   = (monoSamples.length / sampleRate).toFixed(3);
-    infoSampleRate.textContent = sampleRate;
-
-    showStatus("Computing STFT…", false);
-
-    // ── Step 2: slice segment ─────────────────────────────────────────────
-    // Extract the requested analysis window from the loaded samples.
-    // prepareSegment() validates against the full original audio length so
-    // the user can freely adjust startTime / segmentDuration after Run.
-    const segment = prepareSegment(
-      monoSamples,
-      CONFIG.startTime,
-      CONFIG.segmentDuration,
-      sampleRate,
-    );
-
-    // Build the playback buffer from the analyzed segment so playback always
-    // matches the currently displayed spectrogram.
-    const segLen   = segment.length;
-    playbackBuffer = audioCtx.createBuffer(1, segLen, sampleRate);
-    playbackBuffer.getChannelData(0).set(segment);
-    audioDuration  = segLen / sampleRate;
-
-    // ── Step 3: STFT ─────────────────────────────────────────────────────────
-    // Yield first so the status label paints before the CPU-bound work starts.
-    await yieldToUI();
-
-    const mode = comparisonModeSelect.value;
-
-    if (mode === "sidebyside") {
-      // ── Side-by-side: compute STFT for all four window types ──────────────
-      const windowTypes = ["rectangular", "hann", "hamming", "blackman"];
-      fullDbMatrices = {};
-      for (const wt of windowTypes) {
-        const pm = computeSTFT(segment, { ...CONFIG, windowType: wt });
-        fullDbMatrices[wt] = computeSpectrogram(pm);
-        await yieldToUI();
-      }
-
-      // Use any matrix to establish the shared view state (all have same dims)
-      const ref = fullDbMatrices["hann"];
-      const numFrames = ref.length;
-      const numBins   = CONFIG.frameSize / 2 + 1;
-      viewState = { frameStart: 0, frameEnd: numFrames, binStart: 0, binEnd: numBins };
-      fullDbMatrix = null;  // clear single-mode state
-
-      showStatus("Rendering spectrograms…", false);
-      await yieldToUI();
-
-      placeholder.classList.add("hidden");
-      spectroGrid.classList.add("hidden");
-      sbsContainer.classList.remove("hidden");
-
-      updateSbsWidth();
-      renderSideBySide();
-
-    } else {
-      // ── Single mode (and overlay placeholder) ─────────────────────────────
-      const powerMatrix = computeSTFT(segment, CONFIG);
-
-      // ── Step 4: convert power → dB, normalize, clip ───────────────────────
-      const dbMatrix = computeSpectrogram(powerMatrix);
-
-      showStatus("Rendering spectrogram…", false);
-      await yieldToUI();
-
-      // ── Step 5: render ────────────────────────────────────────────────────
-      renderSpectrogram(dbMatrix, canvas, ctx2d);
-
-      // Show the spectroGrid (reveals axes, colorbar, spectrogram) now that
-      // data is painted.  Axes canvases must be visible before clientWidth is
-      // read, otherwise they report 0 dimensions.
-      placeholder.classList.add("hidden");
-      spectroGrid.classList.remove("hidden");
-      sbsContainer.classList.add("hidden");
-
-      // Store the full result so zoom can re-render any sub-region.
-      fullDbMatrix = dbMatrix;
-      fullDbMatrices = null;  // clear sbs state
-      const numFrames = dbMatrix.length;
-      const numBins   = CONFIG.frameSize / 2 + 1;
-      viewState = { frameStart: 0, frameEnd: numFrames, binStart: 0, binEnd: numBins };
-      resetZoomBtn.classList.add("hidden");
-
-      // Set the horizontal canvas width from the time scale before drawing axes.
-      updateSpectroWidth();
-
-      // Draw calibrated axes and colorbar now that the grid is laid out.
-      const tEnd    = CONFIG.startTime + (numFrames * CONFIG.hopSize) / sampleRate;
-      const nyquist = sampleRate / 2;
-      renderAxes(CONFIG.startTime, tEnd, 0, nyquist);
-      renderColorbar();
-    }
-
-    // Enable playback now that we have a rendered spectrogram and playbackBuffer
-    playBtn.disabled = false;
-    scrollModeBtn.classList.remove("hidden");  // show scroll/zoom toggle
-    // Show the collapse hint on mobile (CSS hides it on desktop)
-    if (window.matchMedia("(max-width: 640px)").matches) {
-      collapseHint.classList.remove("hidden");
-    }
-    hideStatus();
+    // ── Steps 2–5: shared with mic path ─────────────────────────────────────
+    await runPipelineFromSamples();
   } catch (err) {
     showStatus(`Error: ${err.message}`, true);
     console.error(err);
@@ -426,6 +323,153 @@ processBtn.addEventListener("click", async () => {
     processBtn.disabled = false;
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// readConfigFromUI — read all STFT parameters from the sidebar into CONFIG
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Copies the current sidebar control values into the global CONFIG object.
+ * Called by both the file Run button and the mic recording path so that both
+ * input sources respect the same user-selected STFT parameters.
+ */
+function readConfigFromUI() {
+  CONFIG.targetSampleRate = Math.max(1, parseInt(sampleRateInput.value, 10) || 48000);
+  CONFIG.frameSize       = parseInt(frameSizeInput.value,   10);
+  CONFIG.hopSize         = parseInt(hopSizeInput.value,     10);
+  CONFIG.windowType      = windowSelect.value;
+  CONFIG.startTime       = parseFloat(startTimeInput.value);
+  CONFIG.segmentDuration = parseFloat(segDurationInput.value);
+  CONFIG.pxPerSec        = Math.max(10, parseFloat(timeScaleInput.value) || 150);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// runPipelineFromSamples — shared STFT pipeline (file upload AND mic recording)
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Runs the complete STFT → render pipeline starting from already-decoded audio.
+ *
+ * This is the SINGLE processing path shared by both file upload and microphone
+ * recording.  By funnelling both inputs here we guarantee identical STFT
+ * parameters, the same normalization, and the same rendering for both sources.
+ *
+ * Preconditions (callers must satisfy):
+ *   - global `monoSamples` is a mono Float32Array of PCM samples
+ *   - global `sampleRate` (Hz) matches those samples
+ *   - global `audioCtx` is an open AudioContext
+ *   - CONFIG fields have been populated (via readConfigFromUI or equivalent)
+ *
+ * Pipeline:
+ *   metadata display → prepareSegment → build playbackBuffer →
+ *   computeSTFT → computeSpectrogram → render → enable playback
+ *
+ * Errors bubble up to the caller's try/catch.
+ */
+async function runPipelineFromSamples() {
+  // Display audio metadata now that duration and sample rate are known.
+  // The user needs these values to set sensible startTime / segmentDuration.
+  infoDuration.textContent   = (monoSamples.length / sampleRate).toFixed(3);
+  infoSampleRate.textContent = sampleRate;
+
+  showStatus("Computing STFT…", false);
+
+  // ── Step 2: slice segment ─────────────────────────────────────────────────
+  // Extract the requested analysis window from the loaded samples.
+  // prepareSegment() validates against the full original audio length so
+  // the user can freely adjust startTime / segmentDuration after Run.
+  const segment = prepareSegment(
+    monoSamples,
+    CONFIG.startTime,
+    CONFIG.segmentDuration,
+    sampleRate,
+  );
+
+  // Build the playback buffer from the analyzed segment so playback always
+  // matches the currently displayed spectrogram.
+  const segLen   = segment.length;
+  playbackBuffer = audioCtx.createBuffer(1, segLen, sampleRate);
+  playbackBuffer.getChannelData(0).set(segment);
+  audioDuration  = segLen / sampleRate;
+
+  // ── Step 3: STFT ─────────────────────────────────────────────────────────
+  // Yield first so the status label paints before the CPU-bound work starts.
+  await yieldToUI();
+
+  const mode = comparisonModeSelect.value;
+
+  if (mode === "sidebyside") {
+    // ── Side-by-side: compute STFT for all four window types ──────────────
+    const windowTypes = ["rectangular", "hann", "hamming", "blackman"];
+    fullDbMatrices = {};
+    for (const wt of windowTypes) {
+      const pm = computeSTFT(segment, { ...CONFIG, windowType: wt });
+      fullDbMatrices[wt] = computeSpectrogram(pm);
+      await yieldToUI();
+    }
+
+    // Use any matrix to establish the shared view state (all have same dims)
+    const ref = fullDbMatrices["hann"];
+    const numFrames = ref.length;
+    const numBins   = CONFIG.frameSize / 2 + 1;
+    viewState = { frameStart: 0, frameEnd: numFrames, binStart: 0, binEnd: numBins };
+    fullDbMatrix = null;  // clear single-mode state
+
+    showStatus("Rendering spectrograms…", false);
+    await yieldToUI();
+
+    placeholder.classList.add("hidden");
+    spectroGrid.classList.add("hidden");
+    sbsContainer.classList.remove("hidden");
+
+    updateSbsWidth();
+    renderSideBySide();
+
+  } else {
+    // ── Single mode (and overlay placeholder) ─────────────────────────────
+    const powerMatrix = computeSTFT(segment, CONFIG);
+
+    // ── Step 4: convert power → dB, normalize, clip ───────────────────────
+    const dbMatrix = computeSpectrogram(powerMatrix);
+
+    showStatus("Rendering spectrogram…", false);
+    await yieldToUI();
+
+    // ── Step 5: render ────────────────────────────────────────────────────
+    renderSpectrogram(dbMatrix, canvas, ctx2d);
+
+    // Show the spectroGrid (reveals axes, colorbar, spectrogram) now that
+    // data is painted.  Axes canvases must be visible before clientWidth is
+    // read, otherwise they report 0 dimensions.
+    placeholder.classList.add("hidden");
+    spectroGrid.classList.remove("hidden");
+    sbsContainer.classList.add("hidden");
+
+    // Store the full result so zoom can re-render any sub-region.
+    fullDbMatrix = dbMatrix;
+    fullDbMatrices = null;  // clear sbs state
+    const numFrames = dbMatrix.length;
+    const numBins   = CONFIG.frameSize / 2 + 1;
+    viewState = { frameStart: 0, frameEnd: numFrames, binStart: 0, binEnd: numBins };
+    resetZoomBtn.classList.add("hidden");
+
+    // Set the horizontal canvas width from the time scale before drawing axes.
+    updateSpectroWidth();
+
+    // Draw calibrated axes and colorbar now that the grid is laid out.
+    const tEnd    = CONFIG.startTime + (numFrames * CONFIG.hopSize) / sampleRate;
+    const nyquist = sampleRate / 2;
+    renderAxes(CONFIG.startTime, tEnd, 0, nyquist);
+    renderColorbar();
+  }
+
+  // Enable playback now that we have a rendered spectrogram and playbackBuffer
+  playBtn.disabled = false;
+  scrollModeBtn.classList.remove("hidden");  // show scroll/zoom toggle
+  // Show the collapse hint on mobile (CSS hides it on desktop)
+  if (window.matchMedia("(max-width: 640px)").matches) {
+    collapseHint.classList.remove("hidden");
+  }
+  hideStatus();
+}
 
 // Tapping the collapse hint collapses the sidebar (same as pressing the toggle)
 collapseHint.addEventListener("click", () => {
@@ -2244,3 +2288,313 @@ function clearAllCursors() {
     }
   });
 }
+
+// =============================================================================
+// Microphone recording — MediaRecorder-based audio capture
+// =============================================================================
+//
+// Overview of the MediaRecorder workflow:
+//   1. navigator.mediaDevices.getUserMedia({ audio: true }) — request mic access.
+//      The browser shows a permission prompt; on denial the returned Promise rejects.
+//   2. new MediaRecorder(stream) — wraps the mic stream.  On start() the recorder
+//      collects encoded audio chunks (ondataavailable fires for each chunk).
+//   3. mediaRecorder.stop() — triggers the final ondataavailable event (flushing any
+//      remaining data), then fires onstop when the recording is fully committed.
+//   4. In onstop: concatenate all Blob chunks into one Blob, then decode it into
+//      a Web Audio AudioBuffer via audioCtx.decodeAudioData().  The AudioBuffer
+//      is converted to a mono Float32Array and fed into the shared STFT pipeline —
+//      EXACTLY the same path used by file upload, guaranteeing identical processing.
+//
+// Why reuse the existing pipeline?
+//   Computing the spectrogram inline here would duplicate the STFT, normalization,
+//   and rendering logic.  Instead, we set the same global state (monoSamples,
+//   sampleRate) that the file path sets, then call runPipelineFromSamples() which
+//   is the single authoritative processing path for all audio sources.
+
+// ── State variables ──────────────────────────────────────────────────────────
+let mediaRecorder       = null;  // active MediaRecorder instance (null when idle)
+let recChunks           = [];    // accumulates encoded audio Blobs during recording
+let recStream           = null;  // MediaStream from getUserMedia (held to stop tracks)
+let recTimerIntervalId  = null;  // setInterval handle for the elapsed-time display
+let recElapsedSec       = 0;     // seconds elapsed in the current recording
+
+// ── setRecordingState — update UI to reflect recording state ─────────────────
+/**
+ * Sets button enabled states and status text for the three recording states.
+ * @param {"idle"|"recording"|"processing"} state
+ */
+function setRecordingState(state) {
+  switch (state) {
+    case "idle":
+      startRecBtn.disabled = false;
+      stopRecBtn.disabled  = true;
+      startRecBtn.classList.remove("recording");
+      recStatus.textContent = "Idle";
+      recStatus.className   = "rec-status";
+      recTimer.classList.add("hidden");
+      recTimer.textContent  = "0.0 s";
+      break;
+
+    case "recording":
+      startRecBtn.disabled = true;
+      stopRecBtn.disabled  = false;
+      startRecBtn.classList.add("recording");
+      recStatus.textContent = "Recording\u2026";
+      recStatus.className   = "rec-status active";
+      recTimer.classList.remove("hidden");
+      break;
+
+    case "processing":
+      startRecBtn.disabled = true;
+      stopRecBtn.disabled  = true;
+      startRecBtn.classList.remove("recording");
+      recStatus.textContent = "Processing\u2026";
+      recStatus.className   = "rec-status processing";
+      recTimer.classList.add("hidden");
+      break;
+  }
+}
+
+// ── startRecording ───────────────────────────────────────────────────────────
+/**
+ * Requests microphone access and begins recording.
+ *
+ * Uses navigator.mediaDevices.getUserMedia to obtain a microphone stream,
+ * then creates a MediaRecorder that collects encoded audio chunks.  The
+ * recording auto-stops after CONFIG.maxDurationSec seconds so the captured
+ * audio always fits within the existing processing limit.
+ *
+ * Possible failures handled:
+ *   - Permission denied (NotAllowedError)
+ *   - No microphone found (NotFoundError)
+ *   - General getUserMedia errors
+ */
+async function startRecording() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showStatus("Error: getUserMedia not supported in this browser.", true);
+    return;
+  }
+
+  // Ensure AudioContext exists (required for later decoding).
+  // Created here (inside a user-gesture handler) to satisfy autoplay policy.
+  if (!audioCtx || audioCtx.state === "closed") {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume();
+
+  try {
+    // Request mono audio; sampleRate hint is advisory (browser may ignore it)
+    recStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl:  false,
+      },
+    });
+  } catch (err) {
+    // Map Web API error names to friendly messages
+    if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+      showStatus("Microphone access denied. Allow permission and try again.", true);
+    } else if (err.name === "NotFoundError") {
+      showStatus("No microphone found. Connect one and try again.", true);
+    } else {
+      showStatus(`Microphone error: ${err.message}`, true);
+    }
+    return;
+  }
+
+  recChunks = [];
+
+  // MediaRecorder encodes audio into a container format (typically WebM/Opus).
+  // We let the browser choose the best supported mimeType automatically.
+  mediaRecorder = new MediaRecorder(recStream);
+
+  // Each ondataavailable callback delivers one encoded audio chunk as a Blob
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) recChunks.push(e.data);
+  };
+
+  // onstop fires after the final ondataavailable — all chunks are committed
+  mediaRecorder.onstop = () => {
+    stopRecordingTimer();
+    const blob = new Blob(recChunks, { type: mediaRecorder.mimeType || "audio/webm" });
+    recChunks = [];
+    // Release the microphone immediately after capture
+    recStream.getTracks().forEach((t) => t.stop());
+    recStream = null;
+    // Hand the encoded blob to the decode + pipeline stage
+    processRecordedAudio(blob);
+  };
+
+  mediaRecorder.onerror = (e) => {
+    stopRecordingTimer();
+    setRecordingState("idle");
+    showStatus(`Recording error: ${e.error ? e.error.message : "unknown"}`, true);
+    if (recStream) {
+      recStream.getTracks().forEach((t) => t.stop());
+      recStream = null;
+    }
+  };
+
+  // Stop any previous file playback before starting recording
+  stopPlayback(true);
+  playBtn.disabled = true;
+  hideStatus();
+
+  setRecordingState("recording");
+  startRecordingTimer();
+
+  mediaRecorder.start();
+
+  // Auto-stop at the processing limit so the pipeline is never overloaded
+  setTimeout(() => {
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+      stopRecording();
+    }
+  }, CONFIG.maxDurationSec * 1000);
+}
+
+// ── stopRecording ────────────────────────────────────────────────────────────
+/**
+ * Stops an active recording.  The MediaRecorder.onstop handler fires
+ * asynchronously and triggers processRecordedAudio() once all chunks are in.
+ */
+function stopRecording() {
+  if (!mediaRecorder || mediaRecorder.state !== "recording") return;
+  // stop() triggers the final ondataavailable flush, then calls onstop
+  mediaRecorder.stop();
+  setRecordingState("processing");
+}
+
+// ── Timer helpers ─────────────────────────────────────────────────────────────
+function startRecordingTimer() {
+  recElapsedSec = 0;
+  recTimer.textContent = "0.0 s";
+  recTimerIntervalId = setInterval(() => {
+    recElapsedSec += 0.1;
+    recTimer.textContent = recElapsedSec.toFixed(1) + " s";
+  }, 100);
+}
+
+function stopRecordingTimer() {
+  if (recTimerIntervalId !== null) {
+    clearInterval(recTimerIntervalId);
+    recTimerIntervalId = null;
+  }
+}
+
+// ── processRecordedAudio ─────────────────────────────────────────────────────
+/**
+ * Decodes a recorded audio Blob and feeds it into the shared STFT pipeline.
+ *
+ * Why pipeline reuse matters:
+ *   All STFT computation, dB normalization, colormap rendering, and playback
+ *   setup live in runPipelineFromSamples().  Calling it here means recorded
+ *   audio goes through EXACTLY the same processing as a file upload — no
+ *   duplication, no risk of subtle differences in normalization or display.
+ *
+ * Conversion steps:
+ *   Blob → FileReader → ArrayBuffer → audioCtx.decodeAudioData() → AudioBuffer
+ *   AudioBuffer → mix to mono Float32Array → trim to maxDurationSec
+ *   → set global monoSamples / sampleRate → runPipelineFromSamples()
+ *
+ * @param {Blob} blob - Encoded audio blob from MediaRecorder
+ */
+async function processRecordedAudio(blob) {
+  if (!blob || blob.size === 0) {
+    setRecordingState("idle");
+    showStatus("Recording produced no audio. Try again.", true);
+    return;
+  }
+
+  try {
+    // ── a. Blob → ArrayBuffer ─────────────────────────────────────────────
+    // FileReader bridges the Blob API to the ArrayBuffer that decodeAudioData needs.
+    const arrayBuffer = await new Promise((resolve, reject) => {
+      const reader  = new FileReader();
+      reader.onload  = (e) => resolve(e.target.result);
+      reader.onerror = ()  => reject(new Error("FileReader failed reading recorded audio"));
+      reader.readAsArrayBuffer(blob);
+    });
+
+    // ── b. ArrayBuffer → AudioBuffer (PCM) ────────────────────────────────
+    // decodeAudioData decodes the container format (WebM/Opus etc.) into
+    // interleaved PCM, exactly as it does for file uploads.
+    const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+    const nativeSampleRate = decoded.sampleRate;
+
+    // ── c. Resample to target rate if necessary ───────────────────────────
+    // Read the target rate from the UI — same as the file path does.
+    const targetRate = Math.max(1, parseInt(sampleRateInput.value, 10) || 48000);
+    let sourceBuf = decoded;
+    if (nativeSampleRate !== targetRate) {
+      const resampledLength = Math.ceil(decoded.length * targetRate / nativeSampleRate);
+      const offlineCtx = new OfflineAudioContext(
+        decoded.numberOfChannels,
+        resampledLength,
+        targetRate,
+      );
+      const src = offlineCtx.createBufferSource();
+      src.buffer = decoded;
+      src.connect(offlineCtx.destination);
+      src.start(0);
+      sourceBuf = await offlineCtx.startRendering();
+    }
+
+    sampleRate = targetRate;  // set global — same side-effect as loadAudio()
+
+    // ── d. Mix to mono ────────────────────────────────────────────────────
+    const numChannels = sourceBuf.numberOfChannels;
+    const length      = sourceBuf.length;
+    const mono        = new Float32Array(length);
+
+    for (let ch = 0; ch < numChannels; ch++) {
+      const chData = sourceBuf.getChannelData(ch);
+      for (let i = 0; i < length; i++) mono[i] += chData[i];
+    }
+    if (numChannels > 1) {
+      for (let i = 0; i < length; i++) mono[i] /= numChannels;
+    }
+
+    // ── e. Trim to the processing limit ──────────────────────────────────
+    const maxSamples = CONFIG.maxDurationSec * sampleRate;
+    monoSamples = mono.length > maxSamples ? mono.slice(0, maxSamples) : mono;
+
+    // ── f. Set CONFIG for a fresh recording: always start at 0, full length
+    //       Preserve the user's STFT parameters (frameSize, hopSize, etc.).
+    readConfigFromUI();
+    CONFIG.startTime       = 0;
+    CONFIG.segmentDuration = monoSamples.length / sampleRate;
+
+    // Sync the sidebar inputs so they reflect what will actually be processed
+    startTimeInput.value    = "0";
+    segDurationInput.value  = CONFIG.segmentDuration.toFixed(3);
+
+    // Reset any stale file display so the metadata section shows recording info
+    fileNameDisplay.textContent = "— (microphone)";
+    fileNameDisplay.classList.remove("selected");
+
+    // Stop any stale playback state before the new pipeline run
+    stopPlayback(true);
+    clearCanvas();
+    spectroGrid.classList.add("hidden");
+    placeholder.classList.remove("hidden");
+
+    // ── g. Run the shared STFT pipeline ──────────────────────────────────
+    await runPipelineFromSamples();
+
+    // Re-enable the Run button for re-processing with different parameters
+    processBtn.disabled = false;
+
+    setRecordingState("idle");
+  } catch (err) {
+    setRecordingState("idle");
+    showStatus(`Error processing recording: ${err.message}`, true);
+    console.error(err);
+  }
+}
+
+// ── Event listeners ──────────────────────────────────────────────────────────
+startRecBtn.addEventListener("click", startRecording);
+stopRecBtn.addEventListener("click",  stopRecording);
