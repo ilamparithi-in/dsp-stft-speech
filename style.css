@@ -1048,3 +1048,54 @@ input[type="number"]:focus {
     background: rgba(30, 74, 154, 0.85);
   }
 }
+
+/* ── Mobile notice ──────────────────────────────────────────────────────── */
+#mobileNotice {
+  display: none; /* hidden on desktop */
+}
+
+@media (max-width: 640px) {
+  #mobileNotice {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: #1a1d23;
+    border-bottom: 1px solid #4a90d9;
+    padding: 14px 16px;
+    font-family: inherit;
+    font-size: 12px;
+    color: #c8d0dc;
+  }
+
+  #mobileNotice strong {
+    font-size: 13px;
+    color: #e6e6e6;
+    letter-spacing: 0.04em;
+  }
+
+  #mobileNotice p {
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  #mobileNoticeDismiss {
+    align-self: flex-start;
+    padding: 5px 12px;
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    background: #252930;
+    color: #9aa0ad;
+    border: 1px solid #3a3f4a;
+    cursor: pointer;
+  }
+
+  #mobileNoticeDismiss:hover {
+    color: #e6e6e6;
+    border-color: #5a6070;
+  }
+
+  #mobileNotice.hidden {
+    display: none;
+  }
+}

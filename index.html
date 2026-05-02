@@ -20,6 +20,13 @@
 </head>
 <body>
 
+  <!-- Mobile notice — only visible on small screens -->
+  <div id="mobileNotice">
+    <strong>Desktop recommended</strong>
+    <p>The mobile UI is not fully implemented. For the best experience, open this on a desktop browser.</p>
+    <button id="mobileNoticeDismiss">Continue anyway</button>
+  </div>
+
   <!--
     Layout: sidebar (controls) + main panel (spectrogram).
     This mirrors the two-pane convention used by tools like Audacity and MATLAB's
@@ -337,5 +344,10 @@
   </div>
 
   <script src="script.js"></script>
+  <script>
+    document.getElementById('mobileNoticeDismiss').addEventListener('click', function () {
+      document.getElementById('mobileNotice').classList.add('hidden');
+    });
+  </script>
 </body>
 </html>
