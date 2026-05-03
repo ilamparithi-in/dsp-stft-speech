@@ -16,6 +16,21 @@
   <!-- expose the export as a global so script.js can reach it -->
   <script>window.FFT = module.exports;</script>
 
+  <!--
+    KaTeX — LaTeX math rendering in the browser.
+
+    Why KaTeX?  The window-function equations contain superscripts, fractions,
+    and Greek letters that are unreadable when written as plain ASCII.  KaTeX
+    renders them as publication-quality math without a heavyweight MathJax
+    install.  It is deliberately loaded in the <head> so the fonts are
+    available before any dynamic equation injection happens in script.js.
+  -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex/dist/katex.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex/dist/katex.min.js"></script>
+  <!-- auto-render scans a container for delimiters and calls katex.render()
+       on each match automatically — no per-equation JS required. -->
+  <script defer src="https://cdn.jsdelivr.net/npm/katex/dist/contrib/auto-render.min.js"></script>
+
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -130,9 +145,12 @@
         </div>
 
         <div class="field">
-          <label class="field-label" for="timeScale">Time Scale (px/s)</label>
-          <!-- Controls horizontal canvas width: higher = more stretched in time. -->
-          <input type="number" id="timeScale" value="150" step="10" min="10" />
+          <div class="slider-label-row">
+            <label class="field-label" for="timeScale">Time Scale (px/s)</label>
+            <span id="timeScaleValue" class="slider-readout">150</span>
+          </div>
+          <!-- Linear range: 10–1500 px/s, step 10. Default 150 px/s. -->
+          <input type="range" id="timeScale" min="10" max="1500" step="10" value="150" />
         </div>
       </div>
 
@@ -181,6 +199,41 @@
         <span id="statusText"></span>
       </div>
 
+      <!--
+        Window Function Visualization — DSP explanation panel.
+
+        A single canvas element serves every comparison mode:
+          Single     → draws the selected window with calibrated axes
+          Side-by-side → overlays all four windows on the same axes +
+                          in-canvas legend (one overlay is more informative
+                          than four stacked panels because the eye can
+                          directly compare amplitudes at every sample index)
+
+        KaTeX renders the formula below the canvas in single mode.
+        In side-by-side mode the legend inside the canvas identifies curves,
+        so the formula area is hidden.
+
+        Canvas intrinsic size is set by JS; CSS controls the layout height.
+      -->
+      <div class="sidebar-section" id="windowVizSection">
+        <button class="section-icon-btn" data-action="expand" title="Window function">&#9636;</button>
+        <div class="section-label">WINDOW FUNCTION</div>
+
+        <!--
+          Single canvas used for all modes.
+          renderWindowsOnCanvas() draws axes, ticks, window curve(s), and
+          (in overlay/SBS mode) an in-canvas legend.
+        -->
+        <canvas id="winVizCanvas" class="win-canvas"></canvas>
+
+        <!--
+          KaTeX-rendered equation for the active window type.
+          Shown only in single mode; JS adds/removes the "hidden" class.
+        -->
+        <div id="winEquation" class="win-equation"></div>
+
+      </div>
+
     </aside>
 
     <!-- ── Right main panel: spectrogram canvas fills all remaining space ── -->
@@ -202,8 +255,8 @@
         -->
         <div id="spectroGrid" class="hidden">
 
-          <!-- Y-axis: frequency labels (Hz) — drawn by renderAxes() -->
-          <canvas id="yAxisCanvas"></canvas>
+          <!-- Y-axis: frequency labels (Hz) — populated by renderAxes() -->
+          <div id="yAxisDiv" class="axis-y"></div>
 
           <!--
             spectroScrollArea: horizontally scrollable column that holds the
@@ -226,7 +279,7 @@
             </div>
 
             <!-- X-axis: time labels — scrolls with the spectrogram -->
-            <canvas id="xAxisCanvas"></canvas>
+            <div id="xAxisDiv" class="axis-x"></div>
 
           </div>
 
@@ -251,8 +304,10 @@
         -->
         <div id="sbsContainer" class="hidden">
 
-          <!-- Shared Y-axis (frequency) — drawn by renderSbsAxes() -->
-          <canvas id="sbsYAxisCanvas"></canvas>
+          <!-- Shared Y-axis (frequency) — populated by renderSbsAxes() -->
+          <div id="sbsYAxisWrapper">
+            <div id="sbsYAxisDiv" class="axis-y"></div>
+          </div>
 
           <!-- sbsMain: flex column holding the 2×2 panel grid + shared x-axis -->
           <div id="sbsMain">
@@ -316,7 +371,7 @@
 
             <!-- Shared X-axis (time) — synced to panel scroll via JS -->
             <div id="sbsXAxisWrapper">
-              <canvas id="sbsXAxisCanvas"></canvas>
+              <div id="sbsXAxisDiv" class="axis-x"></div>
             </div>
 
           </div>
@@ -372,6 +427,9 @@
                 a rectangle, and double-click (or press <kbd>&#8862; Reset</kbd>) to zoom back out.</li>
             <li><strong>Play</strong> — press <kbd>&#9654; Play</kbd> to listen while a red cursor
                 line tracks position in real time.</li>
+            <li><strong>Re-run</strong> — change any parameter (including the comparison mode)
+                and press <kbd>&#9654; Run</kbd> again. Recorded audio is kept in memory, so
+                no re-recording is needed.</li>
           </ol>
         </section>
 
@@ -424,8 +482,10 @@
               </tr>
               <tr>
                 <td><code>Time Scale (px/s)</code></td>
-                <td>Horizontal zoom of the spectrogram canvas — pixels per second.
-                    Increase to spread out the time axis; scroll right to see the rest.</td>
+                <td>Horizontal zoom slider — pixels per second. Drag right to stretch the
+                    time axis; the spectrogram rescales immediately without pressing Run.
+                    The current value is shown next to the label (range: 10 – 1500 px/s,
+                    step 10).</td>
               </tr>
             </tbody>
           </table>
@@ -456,12 +516,32 @@
         </section>
 
         <section class="info-section">
+          <h2 class="info-h2">Window function panel</h2>
+          <p>
+            The <strong>WINDOW FUNCTION</strong> section at the bottom of the sidebar shows a
+            live plot of the selected window's shape, updated whenever the Frame Size or
+            Window type changes.
+          </p>
+          <ul class="info-ul">
+            <li>In <strong>Single</strong> mode the panel renders one curve with its mathematical
+                equation typeset in LaTeX below the canvas.</li>
+            <li>In <strong>Side-by-Side</strong> mode all four windows are overlaid on the same
+                axes with a colour-coded legend, making amplitude differences visible at a glance
+                (e.g. Hamming's non-zero endpoints vs. Hann's zero-crossings).</li>
+            <li>The Y-axis is fixed at [0, 1] — no per-window auto-scaling — so relative
+                heights are meaningful across window types.</li>
+          </ul>
+        </section>
+
+        <section class="info-section">
           <h2 class="info-h2">Comparison mode</h2>
           <p>
-            Set <em>Mode</em> to <strong>Side-by-Side</strong> and press Run to display four
-            spectrograms simultaneously — one for each window function
+            Set <em>Mode</em> to <strong>Side-by-Side</strong> and press <kbd>&#9654; Run</kbd>
+            to display four spectrograms simultaneously — one for each window function
             (Rectangular, Hann, Hamming, Blackman). Panels share the same frequency axis
             and scroll in sync, so window-function effects are directly comparable.
+            You can switch between Single and Side-by-Side freely and re-run without
+            reloading audio.
           </p>
         </section>
 

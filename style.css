@@ -49,7 +49,9 @@ body {
  */
 #app {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  /* 340px sidebar gives room for window-function plots + equations without
+     sacrificing the spectrogram area meaningfully on typical 1080p+ screens. */
+  grid-template-columns: 340px 1fr;
   grid-template-rows: 100vh;
   height: 100vh;
   overflow: hidden;   /* prevent page-level scrollbars; each pane scrolls independently */
@@ -305,6 +307,62 @@ input[type="number"]:focus {
   outline-offset: 0;
 }
 
+/* ── Range slider (time scale) ──────────────────────────────────────────── */
+.slider-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.slider-readout {
+  font-size: 11px;
+  color: #5a8fff;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: #3a3f4a;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  margin: 5px 0 3px;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #5a8fff;
+  cursor: pointer;
+  border: none;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #5a8fff;
+  cursor: pointer;
+  border: none;
+}
+
+input[type="range"]:focus {
+  outline: none;
+}
+
+input[type="range"]:focus::-webkit-slider-thumb {
+  box-shadow: 0 0 0 2px rgba(90, 143, 255, 0.35);
+}
+
 /* ── Read-only metadata values (audio duration, sample rate) ───────────── */
 /*
  * Displayed as plain text under a muted label.
@@ -492,7 +550,9 @@ input[type="number"]:focus {
 #app.sidebar-collapsed #processBtn,
 #app.sidebar-collapsed #playBtn,
 #app.sidebar-collapsed .status-bar,
-#app.sidebar-collapsed .collapse-hint {
+#app.sidebar-collapsed .collapse-hint,
+#app.sidebar-collapsed #winVizCanvas,
+#app.sidebar-collapsed #winEquation {
   display: none;
 }
 
@@ -744,20 +804,87 @@ input[type="number"]:focus {
   min-height: 0;
 }
 
-/* Y-axis fills its grid cell (data row = 300 px) */
-#yAxisCanvas {
-  display: block;
+/* Y-axis: fills its grid cell, contains absolutely-positioned tick children */
+#yAxisDiv {
+  position: relative;
   width: 100%;
   height: 100%;
   border-right: 1px solid #2e3138;
+  overflow: hidden;
 }
 
-/* X-axis sits at the bottom of the scroll container */
-#xAxisCanvas {
-  display: block;
+/* X-axis: sits at the bottom of the scroll container */
+#xAxisDiv {
+  position: relative;
   flex-shrink: 0;
   height: 36px;
   border-top: 1px solid #2e3138;
+  overflow: hidden;
+}
+
+/* ── Axis tick marks and labels (shared by all axis divs) ──────────────── */
+/* X-axis ticks: centered on their data position, tick line above, label below */
+.tick-x {
+  position: absolute;
+  top: 7px;
+  transform: translateX(-50%);
+  font: 10px Consolas, Menlo, monospace;
+  color: #6a6f7a;
+  white-space: nowrap;
+  pointer-events: none;
+  line-height: 1;
+}
+.tick-x::before {
+  content: '';
+  position: absolute;
+  top: -7px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1px;
+  height: 5px;
+  background: #3a3f4a;
+}
+/* Y-axis ticks: centered vertically on their data position, label left of tick line */
+.tick-y {
+  position: absolute;
+  right: 6px;
+  transform: translateY(50%);
+  font: 10px Consolas, Menlo, monospace;
+  color: #6a6f7a;
+  white-space: nowrap;
+  pointer-events: none;
+  line-height: 1;
+  text-align: right;
+}
+.tick-y::after {
+  content: '';
+  position: absolute;
+  right: -6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 1px;
+  background: #3a3f4a;
+}
+/* Axis title labels */
+.axis-title-x {
+  position: absolute;
+  right: 4px;
+  top: 7px;
+  font: 10px Consolas, Menlo, monospace;
+  color: #9aa0ad;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.axis-title-y {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  font: 9px Consolas, Menlo, monospace;
+  color: #9aa0ad;
+  pointer-events: none;
+  white-space: nowrap;
+  transform: translate(-50%, -50%) rotate(-90deg);
 }
 
 /* ── Side-by-side comparison container ─────────────────────────────────── */
@@ -782,7 +909,8 @@ input[type="number"]:focus {
   display: none;
 }
 
-#sbsYAxisCanvas      { grid-column: 1; grid-row: 1; display: block; width: 100%; height: 100%; border-right: 1px solid #2e3138; }
+#sbsYAxisWrapper     { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; border-right: 1px solid #2e3138; overflow: hidden; }
+#sbsYAxisDiv         { position: relative; width: 100%; overflow: hidden; flex-shrink: 0; }
 #sbsMain             { grid-column: 2; grid-row: 1 / 3; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 #sbsColorbarArea     { grid-column: 3; grid-row: 1; display: flex; flex-direction: column; overflow: hidden; border-left: 1px solid #2e3138; }
 #sbsCustomScrollbar  { grid-column: 2; grid-row: 3; position: relative; background: #1a1d23; border-top: 1px solid #2e3138; cursor: pointer; user-select: none; }
@@ -873,10 +1001,13 @@ input[type="number"]:focus {
   z-index: 4;
 }
 
-/* Wrapper scrolls in sync with .sbs-panel-scroll (native scrollbar hidden) */
+/* Wrapper covers only the LEFT panel column (half of sbsMain).
+   Both columns show the same time range, so one axis suffices. */
 #sbsXAxisWrapper {
   flex-shrink: 0;
   height: 36px;
+  /* Width is set by JS to match the left panel scroll area exactly, so that
+     the scroll range aligns perfectly with the panel scroll range. */
   overflow-x: scroll;
   overflow-y: hidden;
   border-top: 1px solid #2e3138;
@@ -884,9 +1015,10 @@ input[type="number"]:focus {
 #sbsXAxisWrapper::-webkit-scrollbar { display: none; }
 #sbsXAxisWrapper { scrollbar-width: none; }
 
-#sbsXAxisCanvas {
-  display: block;
+#sbsXAxisDiv {
+  position: relative;
   height: 36px;
+  overflow: hidden;  /* clip labels that would extend beyond the content boundary */
 }
 
 /* Per-panel zoom reset button */
@@ -1084,6 +1216,68 @@ input[type="number"]:focus {
     color: #e6e6e6;
     background: rgba(30, 74, 154, 0.85);
   }
+}
+
+  #sbsScrollModeBtn.active {
+    color: #e6e6e6;
+    background: rgba(30, 74, 154, 0.85);
+  }
+}
+
+/* ── Window Function Visualization panel ───────────────────────────────── */
+/*
+ * A single canvas (#winVizCanvas) serves all comparison modes.  Switching
+ * from four stacked per-window panels to one unified overlay canvas fixes
+ * two usability problems:
+ *
+ *   1. Stacked panels forced the sidebar to scroll past hundreds of pixels
+ *      to see all four windows — only the top panel was visible without
+ *      scrolling.  A single canvas stays in one screen region.
+ *
+ *   2. Overlaid curves on shared axes let the eye make direct amplitude
+ *      comparisons (e.g. Hamming ≈ 0.08 at ends vs. Hann ≈ 0) without
+ *      mentally aligning four separate plots.
+ *
+ * Height 140px gives room for the 8px top pad, ~100px plot area, and
+ * 24px bottom pad for X-axis tick labels.  JS writes the intrinsic pixel
+ * dimensions at render time for DPR-correct sharpness.
+ */
+
+/* The shared canvas element — width:100% fills the sidebar section */
+.win-canvas {
+  display: block;
+  width: 100%;
+  height: 140px;
+  background: #0f1115;
+  border: 1px solid #2e3138;
+  border-radius: 2px;
+  /* pixelated keeps axis lines crisp at non-integer DPR scales */
+  image-rendering: pixelated;
+}
+
+/*
+ * KaTeX equation container — shown only in single mode.
+ * overflow-x:auto lets the Blackman equation (widest) scroll rather than
+ * overflow the sidebar.  min-height prevents collapse before katex.render()
+ * has run for the first time.
+ */
+.win-equation {
+  font-size: 12px;
+  color: #9aa0ad;
+  overflow-x: auto;
+  padding: 2px 0;
+  min-height: 28px;
+  line-height: 1.5;
+}
+
+/* hidden utility class — JS adds/removes to show/hide the equation in SBS mode */
+.win-equation.hidden {
+  display: none;
+}
+
+/* Scale KaTeX output to match the surrounding sidebar text size */
+.win-equation .katex {
+  font-size: 1em;
 }
 
 /* ── Mobile notice ──────────────────────────────────────────────────────── */
