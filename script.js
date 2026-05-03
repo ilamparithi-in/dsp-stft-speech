@@ -3,7 +3,7 @@
  *
  * Pipeline:
  *   1. User selects audio file
- *   2. loadAudio()       — decode with Web Audio API, convert mono, trim to 10 s
+ *   2. loadAudio()       — decode with Web Audio API, convert mono
  *   3. computeSTFT()     — frame → window → FFT (fft.js) → magnitude²
  *   4. renderSpectrogram() — paint power matrix onto an HTML5 Canvas
  *
@@ -17,7 +17,7 @@
 // CONFIG — single place to tune STFT parameters
 // ─────────────────────────────────────────────────────────────────────────────
 const CONFIG = {
-  maxDurationSec: 10,       // hard cap: only first N seconds are loaded
+  maxDurationSec: 10,       // kept for reference; recording no longer auto-stops at this limit
   targetSampleRate: 48000,  // desired analysis sample rate (audio resampled if different)
   frameSize: 256,           // FFT window length (must be power of 2)
   hopSize: 128,             // samples between successive frames
@@ -568,13 +568,13 @@ function clearCanvas() {
 // =============================================================================
 /**
  * Decodes an audio File object using the Web Audio API and returns a mono
- * Float32Array trimmed to CONFIG.maxDurationSec seconds.
+ * Float32Array (full duration).
  *
  * Steps:
  *   a. Read the File as an ArrayBuffer via FileReader
  *   b. Decode PCM with AudioContext.decodeAudioData()
  *   c. Average all channels into one mono channel
- *   d. Trim to at most maxDurationSec * sampleRate samples
+ *   d. Mix channels to mono
  *
  * @param {File} file - Audio file selected by the user
  * @returns {Promise<Float32Array>}
@@ -2293,8 +2293,7 @@ function setRecordingState(state) {
  *
  * Uses navigator.mediaDevices.getUserMedia to obtain a microphone stream,
  * then creates a MediaRecorder that collects encoded audio chunks.  The
- * recording auto-stops after CONFIG.maxDurationSec seconds so the captured
- * audio always fits within the existing processing limit.
+ * recording runs until the user presses Stop.
  *
  * Possible failures handled:
  *   - Permission denied (NotAllowedError)
@@ -2379,13 +2378,6 @@ async function startRecording() {
   startRecordingTimer();
 
   mediaRecorder.start();
-
-  // Auto-stop at the processing limit so the pipeline is never overloaded
-  setTimeout(() => {
-    if (mediaRecorder && mediaRecorder.state === "recording") {
-      stopRecording();
-    }
-  }, CONFIG.maxDurationSec * 1000);
 }
 
 // ── stopRecording ────────────────────────────────────────────────────────────
@@ -2429,7 +2421,7 @@ function stopRecordingTimer() {
  *
  * Conversion steps:
  *   Blob → FileReader → ArrayBuffer → audioCtx.decodeAudioData() → AudioBuffer
- *   AudioBuffer → mix to mono Float32Array → trim to maxDurationSec
+ *   AudioBuffer → mix to mono Float32Array
  *   → set global monoSamples / sampleRate → runPipelineFromSamples()
  *
  * @param {Blob} blob - Encoded audio blob from MediaRecorder
@@ -2490,24 +2482,21 @@ async function processRecordedAudio(blob) {
       for (let i = 0; i < length; i++) mono[i] /= numChannels;
     }
 
-    // ── e. Trim to the processing limit ──────────────────────────────────
-    const maxSamples = CONFIG.maxDurationSec * sampleRate;
-    monoSamples = mono.length > maxSamples ? mono.slice(0, maxSamples) : mono;
+    // ── e. Use full recording without trimming ────────────────────────────
+    monoSamples = mono;
 
     // Stash a copy of the raw PCM for WAV export — before the pipeline
     // potentially overwrites monoSamples (e.g. on a subsequent file load).
     recPCM           = monoSamples.slice();
     recPCMSampleRate = sampleRate;
 
-    // ── f. Set CONFIG for a fresh recording: always start at 0, full length
-    //       Preserve the user's STFT parameters (frameSize, hopSize, etc.).
+    // ── f. Set CONFIG for a fresh recording: reset start to 0 but honour
+    //       the user's segmentDuration input for partial processing.
     readConfigFromUI();
-    CONFIG.startTime       = 0;
-    CONFIG.segmentDuration = monoSamples.length / sampleRate;
+    CONFIG.startTime = 0;
 
-    // Sync the sidebar inputs so they reflect what will actually be processed
-    startTimeInput.value    = "0";
-    segDurationInput.value  = CONFIG.segmentDuration.toFixed(3);
+    // Sync the start-time input; leave segDuration as the user entered it
+    startTimeInput.value = "0";
 
     // Reset any stale file display so the metadata section shows recording info
     fileNameDisplay.textContent = "— (microphone)";

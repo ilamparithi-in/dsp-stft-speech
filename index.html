@@ -429,7 +429,9 @@
           <ol class="info-ol">
             <li><strong>Load audio</strong> — click <kbd>Browse…</kbd> to pick a local audio file
                 (MP3, WAV, OGG, M4A, …), <em>or</em> press <kbd>&#9679; Record</kbd> to capture
-                microphone audio directly. Stop recording with <kbd>&#9632; Stop</kbd>.</li>
+                microphone audio directly. Stop recording with <kbd>&#9632; Stop</kbd>.
+                Optionally press <kbd>&#8595; Save Recording</kbd> to download the captured
+                audio as a WAV file.</li>
             <li><strong>Adjust parameters</strong> (optional) — tweak Frame Size, Hop Size, Window,
                 and the time range in the PARAMETERS panel.</li>
             <li><strong>Run</strong> — press <kbd>&#9654; Run</kbd>. The spectrogram appears in
@@ -521,8 +523,11 @@
                 (crosshair cursor).</li>
             <li><strong>Double-click</strong> the spectrogram or press <kbd>&#8862; Reset</kbd>
                 to return to the full view.</li>
-            <li>On mobile, the <kbd>&#8660; Scroll</kbd> toggle switches between pan and
-                zoom interaction modes.</li>
+            <li>The <kbd>&#8660; Scroll</kbd> / <kbd>&#128269; Zoom</kbd> button (top-left of
+                the spectrogram, visible after Run) toggles between <em>pan</em> mode (drag
+                to scroll along the time axis) and <em>zoom</em> mode (drag to draw a zoom
+                rectangle). Particularly useful on touch screens, where a drag gesture would
+                otherwise conflict with the browser's native scroll.</li>
           </ul>
         </section>
 
@@ -541,6 +546,17 @@
                 (e.g. Hamming's non-zero endpoints vs. Hann's zero-crossings).</li>
             <li>The Y-axis is fixed at [0, 1] — no per-window auto-scaling — so relative
                 heights are meaningful across window types.</li>
+          </ul>
+          <p>
+            Below the shape plot, a <strong>Frequency Response</strong> canvas shows the
+            magnitude spectrum of the window in dB, zoomed to the main lobe and first few
+            sidelobes. This makes spectral leakage directly readable:
+          </p>
+          <ul class="info-ul">
+            <li><strong>Rectangular</strong> — narrow main lobe; first sidelobe ≈ −13 dB, slow rolloff.</li>
+            <li><strong>Hann</strong> — wider main lobe; sidelobes ≈ −32 dB with fast rolloff.</li>
+            <li><strong>Hamming</strong> — similar width to Hann; sidelobes plateau near −43 dB.</li>
+            <li><strong>Blackman</strong> — widest main lobe; sidelobes below −74 dB.</li>
           </ul>
         </section>
 
