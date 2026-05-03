@@ -70,6 +70,7 @@ const appEl                 = document.getElementById("app");                   
 // Microphone recording controls
 const startRecBtn  = document.getElementById("startRecBtn");
 const stopRecBtn   = document.getElementById("stopRecBtn");
+const saveRecBtn   = document.getElementById("saveRecBtn");
 const recStatus    = document.getElementById("recStatus");
 const recTimer     = document.getElementById("recTimer");
 // Comparison mode controls
@@ -2299,6 +2300,9 @@ function clearAllCursors() {
 // ── State variables ──────────────────────────────────────────────────────────
 let mediaRecorder       = null;  // active MediaRecorder instance (null when idle)
 let recChunks           = [];    // accumulates encoded audio Blobs during recording
+let lastRecordingBlob   = null;  // set after a recording completes, used as save-ready flag
+let recPCM              = null;  // Float32Array of the processed recording (for WAV export)
+let recPCMSampleRate    = 0;     // sample rate matching recPCM
 let recStream           = null;  // MediaStream from getUserMedia (held to stop tracks)
 let recTimerIntervalId  = null;  // setInterval handle for the elapsed-time display
 let recElapsedSec       = 0;     // seconds elapsed in the current recording
@@ -2405,6 +2409,7 @@ async function startRecording() {
     stopRecordingTimer();
     const blob = new Blob(recChunks, { type: mediaRecorder.mimeType || "audio/webm" });
     recChunks = [];
+    lastRecordingBlob = blob;  // stash for Save button
     // Release the microphone immediately after capture
     recStream.getTracks().forEach((t) => t.stop());
     recStream = null;
@@ -2546,6 +2551,11 @@ async function processRecordedAudio(blob) {
     const maxSamples = CONFIG.maxDurationSec * sampleRate;
     monoSamples = mono.length > maxSamples ? mono.slice(0, maxSamples) : mono;
 
+    // Stash a copy of the raw PCM for WAV export — before the pipeline
+    // potentially overwrites monoSamples (e.g. on a subsequent file load).
+    recPCM           = monoSamples.slice();
+    recPCMSampleRate = sampleRate;
+
     // ── f. Set CONFIG for a fresh recording: always start at 0, full length
     //       Preserve the user's STFT parameters (frameSize, hopSize, etc.).
     readConfigFromUI();
@@ -2572,6 +2582,7 @@ async function processRecordedAudio(blob) {
     // Re-enable the Run button for re-processing with different parameters
     processBtn.disabled = false;
 
+    saveRecBtn.classList.remove("hidden");
     setRecordingState("idle");
   } catch (err) {
     setRecordingState("idle");
@@ -2580,9 +2591,64 @@ async function processRecordedAudio(blob) {
   }
 }
 
+// ── encodeWAV — build a 16-bit mono WAV Blob from a Float32Array ─────────────
+function encodeWAV(samples, sr) {
+  const numSamples   = samples.length;
+  const bitsPerSample = 16;
+  const blockAlign   = bitsPerSample / 8;          // 2 bytes per sample (mono)
+  const byteRate     = sr * blockAlign;
+  const dataSize     = numSamples * blockAlign;
+  const buffer       = new ArrayBuffer(44 + dataSize);
+  const view         = new DataView(buffer);
+
+  const writeStr = (offset, str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+
+  writeStr(0,  "RIFF");
+  view.setUint32(4,  36 + dataSize, true);   // ChunkSize
+  writeStr(8,  "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16,            true);   // Subchunk1Size (PCM)
+  view.setUint16(20, 1,             true);   // AudioFormat = PCM
+  view.setUint16(22, 1,             true);   // NumChannels = 1
+  view.setUint32(24, sr,            true);   // SampleRate
+  view.setUint32(28, byteRate,      true);   // ByteRate
+  view.setUint16(32, blockAlign,    true);   // BlockAlign
+  view.setUint16(34, bitsPerSample, true);   // BitsPerSample
+  writeStr(36, "data");
+  view.setUint32(40, dataSize,      true);   // Subchunk2Size
+
+  // Convert Float32 [-1, 1] → Int16
+  let offset = 44;
+  for (let i = 0; i < numSamples; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+// ── saveRecording — download the processed recording as a timestamped WAV ─────
+function saveRecording() {
+  if (!recPCM) return;
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_` +
+                `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const blob = encodeWAV(recPCM, recPCMSampleRate);
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = `Recording_${stamp}.wav`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ── Event listeners ──────────────────────────────────────────────────────────
 startRecBtn.addEventListener("click", startRecording);
 stopRecBtn.addEventListener("click",  stopRecording);
+saveRecBtn.addEventListener("click",  saveRecording);
 
 // ── Info modal ───────────────────────────────────────────────────────────────
 const infoBtn    = document.getElementById("infoBtn");

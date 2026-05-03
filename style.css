@@ -1201,6 +1201,33 @@ input[type="number"]:focus {
   border-color: #882222;
 }
 
+/* Save recording button */
+.btn-rec-save {
+  width: 100%;
+  margin-top: 5px;
+  padding: 4px 6px;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  border: 1px solid #2a4a3a;
+  background: #1a2a22;
+  color: #44aa77;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.btn-rec-save:not(:disabled):hover {
+  background: #20342a;
+  color: #55cc88;
+  border-color: #448866;
+}
+.btn-rec-save:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-rec-save.hidden {
+  display: none;
+}
+
 /* Status text: Idle / Recording… / Processing… */
 .rec-status {
   font-family: inherit;
