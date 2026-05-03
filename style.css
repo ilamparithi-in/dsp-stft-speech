@@ -1220,12 +1220,6 @@ input[type="range"]:focus::-webkit-slider-thumb {
   }
 }
 
-  #sbsScrollModeBtn.active {
-    color: #e6e6e6;
-    background: rgba(30, 74, 154, 0.85);
-  }
-}
-
 /* ── Window Function Visualization panel ───────────────────────────────── */
 /*
  * A single canvas (#winVizCanvas) serves all comparison modes.  Switching
