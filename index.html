@@ -129,6 +129,7 @@
             <option value="hann">Hann</option>
             <option value="hamming" selected>Hamming</option>
             <option value="blackman">Blackman</option>
+            <option value="custom">Custom (Edit…)</option>
           </select>
         </div>
 
@@ -404,6 +405,111 @@
     </main>
 
   </div>
+
+  <!-- ── Custom Window Editor modal ───────────────────────────────────────── -->
+  <!--
+    The custom window editor lets users define arbitrary window functions by
+    drawing a node-based curve in the TIME DOMAIN only.
+
+    Why only the time domain is editable:
+      A window function is defined as a sequence w[n] of time-domain coefficients.
+      Its frequency response W(e^jω) = Σ_n w[n]·e^{-jωn} is COMPLETELY DETERMINED
+      by w[n] — you cannot independently specify both. Any change to the time-domain
+      curve immediately implies a new frequency response. The freq plot is therefore
+      read-only and auto-recomputes whenever nodes are moved.
+
+    Why symmetry matters:
+      A symmetric window (w[n] = w[N−1−n]) has a real-valued DFT (zero phase
+      distortion) and its main lobe is symmetric around DC. Non-symmetric windows
+      introduce frequency-dependent phase shifts in STFT frames, which can cause
+      artifacts in resynthesis and make sidelobe patterns harder to read. All
+      standard windows (Hann, Hamming, Blackman) are symmetric.
+  -->
+  <div id="customWinModal" class="cw-modal hidden" role="dialog" aria-modal="true" aria-labelledby="cwModalTitle">
+    <div class="cw-modal-box">
+
+      <div class="cw-modal-header">
+        <span id="cwModalTitle" class="cw-modal-title">Custom Window Editor</span>
+        <button id="cwCloseBtn" class="cw-modal-close" title="Close">&#x2715;</button>
+      </div>
+
+      <div class="cw-modal-body">
+
+        <!-- Left column: editable time-domain curve editor -->
+        <div class="cw-col cw-col-left">
+          <div class="cw-col-header">
+            <span class="cw-col-title">Time Domain</span>
+            <!-- Clearly signals this canvas is interactive / editable -->
+            <span class="cw-badge cw-badge-edit">Editable</span>
+          </div>
+
+          <!--
+            Time-domain canvas — the ONLY interactive element in the editor.
+            Nodes define w[n] via linear interpolation. The canvas receives
+            all mouse / touch events; the frequency canvas does NOT.
+          -->
+          <canvas id="cwTimeDomainCanvas" class="cw-td-canvas"></canvas>
+
+          <div class="cw-td-hint">Click empty area to add node &nbsp;·&nbsp; Drag to move &nbsp;·&nbsp; Right-click to delete</div>
+
+          <div class="cw-td-controls">
+            <label class="cw-check-label">
+              <!--
+                Symmetry toggle (default ON).
+                When ON: only left half [0, 0.5] is editable; right half is
+                auto-mirrored so w[n] = w[N−1−n]. Keeps the DFT real-valued.
+              -->
+              <input type="checkbox" id="cwSymmetry" checked>
+              Symmetric &nbsp;<span class="cw-td-sym-note">(recommended)</span>
+            </label>
+            <!-- Reset to default Hamming-like bell shape -->
+            <button id="cwResetBtn" class="cw-btn">Reset</button>
+          </div>
+        </div>
+
+        <!-- Right column: read-only frequency response + save/load controls -->
+        <div class="cw-col cw-col-right">
+          <div class="cw-col-header">
+            <span class="cw-col-title">Frequency Response</span>
+            <!-- Clearly signals this canvas is computed, not editable -->
+            <span class="cw-badge cw-badge-fft">Derived (FFT)</span>
+          </div>
+
+          <!--
+            Frequency response canvas — READ-ONLY.
+            Computed by zero-padding the sampled window array to 8× its length,
+            running an FFT, and plotting 20·log10(|W(k)|) normalised to 0 dB peak.
+            NO event handlers are attached to this canvas element.
+          -->
+          <canvas id="cwFreqCanvas" class="cw-freq-canvas"></canvas>
+
+          <div class="cw-freq-note">Auto-computed from time-domain curve above. Not interactive.</div>
+
+          <!-- Save / Load / Delete for named presets -->
+          <div class="cw-save-area">
+            <div class="cw-save-row">
+              <input type="text" id="cwNameInput" class="cw-name-input"
+                     placeholder="Window name…" maxlength="40" spellcheck="false"
+                     autocomplete="off" />
+              <button id="cwSaveBtn" class="cw-btn cw-btn-primary">Save</button>
+            </div>
+            <!-- Saved window presets — populated dynamically from localStorage -->
+            <div id="cwSavedList" class="cw-saved-list"></div>
+          </div>
+
+          <!-- Validation warnings (non-symmetric, sharp discontinuities, etc.) -->
+          <div id="cwWarnings" class="cw-warnings" role="alert" aria-live="polite"></div>
+        </div>
+
+      </div><!-- /.cw-modal-body -->
+
+      <div class="cw-modal-footer">
+        <span class="cw-footer-note">Press Apply then Run to use this window in the STFT.</span>
+        <button id="cwApplyBtn" class="cw-btn cw-btn-apply">Apply to STFT</button>
+      </div>
+
+    </div><!-- /.cw-modal-box -->
+  </div><!-- /#customWinModal -->
 
   <!-- ── Info modal ────────────────────────────────────────────────────────── -->
   <div id="infoModal" class="info-modal hidden" role="dialog" aria-modal="true" aria-labelledby="infoModalTitle">

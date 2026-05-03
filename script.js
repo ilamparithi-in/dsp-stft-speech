@@ -708,6 +708,14 @@ function prepareSegment(samples, startTime, segmentDuration, fs) {
  * @returns {Float32Array}
  */
 function buildWindow(type, N) {
+  // Custom window: delegate to the node-curve editor.
+  // cwGetWindowArray() is defined in the custom window editor section below.
+  // JavaScript's function-hoisting rules ensure it is available at call-time
+  // even though its definition appears later in the file.
+  if (type === "custom" || type.startsWith("csaved:")) {
+    return cwGetWindowArray(type, N);
+  }
+
   const w = new Float32Array(N);
   const TWO_PI = 2 * Math.PI;
 
@@ -2691,6 +2699,13 @@ const WIN_EQUATIONS = {
  * @returns {Float32Array} coefficients w[0 … N−1] ∈ [0, 1]
  */
 function generateWindow(type, N) {
+  // Custom window: same delegation as buildWindow().
+  // Both functions compute window coefficients; the only difference is which
+  // call-site invokes them (STFT pipeline vs. sidebar visualization).
+  if (type === "custom" || type.startsWith("csaved:")) {
+    return cwGetWindowArray(type, N);
+  }
+
   const w      = new Float32Array(N);
   const TWO_PI = 2 * Math.PI;
   const NM1    = N - 1;  // symmetric denominator — see doc-comment above
@@ -3531,24 +3546,35 @@ function renderWindowPanel() {
     renderFrequencyResponse(winFreqCanvas, freqDataList);
 
   } else {
-    // ── Single mode: one curve + KaTeX equation ───────────────────────────
-    winEquationEl.classList.remove("hidden");
+    // ── Single mode: one curve + (optionally) KaTeX equation ─────────────
+    const isCustomWinType = winType === "custom" || winType.startsWith("csaved:");
+
+    if (isCustomWinType) {
+      // Custom windows have no closed-form LaTeX equation to display.
+      winEquationEl.classList.add("hidden");
+    } else {
+      winEquationEl.classList.remove("hidden");
+      renderEquation(winType, winEquationEl);
+    }
+
+    // generateWindow() transparently handles custom types via cwGetWindowArray().
+    // WIN_COLORS falls back to soft-purple for any unrecognised key.
     renderWindowsOnCanvas(
       winVizCanvas,
-      [{ type: winType, color: WIN_COLORS[winType] || "#5a8fff" }],
+      [{ type: winType, color: WIN_COLORS[winType] || "#9060e0" }],
       N,
     );
-    renderEquation(winType, winEquationEl);
 
     // ── Frequency response: single window ────────────────────────────────
-    // Shows the spectral leakage character of the currently selected window.
-    // No legend needed for a single curve — the window name is already shown
-    // in the time-domain section and equation above.
+    // For custom windows the label is derived from the type string.
+    const freqLabel = isCustomWinType
+      ? (winType === "custom" ? "Custom" : winType.slice("csaved:".length))
+      : winType;
     const freqData = computeWindowFFT(generateWindow(winType, N));
     renderFrequencyResponse(winFreqCanvas, [{
       data:  freqData,
-      color: WIN_COLORS[winType] || "#5a8fff",
-      label: winType,
+      color: WIN_COLORS[winType] || "#9060e0",
+      label: freqLabel,
     }]);
   }
 }
@@ -3598,3 +3624,917 @@ if (document.readyState === "loading") {
 } else {
   initialWindowRender();
 }
+
+// =============================================================================
+// CUSTOM WINDOW EDITOR
+// =============================================================================
+//
+// Design rationale — why the time domain is the ONLY editable axis:
+//   A window function is defined as a finite sequence of real coefficients
+//   w[n], n = 0 … N−1.  Its frequency response is the Discrete-Time Fourier
+//   Transform (DTFT):
+//
+//       W(e^{jω}) = Σ_{n=0}^{N-1}  w[n] · e^{-jωn}
+//
+//   The magnitude |W(e^{jω})| plotted in dB is COMPLETELY DETERMINED by w[n].
+//   It is not an independent parameter that can be set separately — changing
+//   any w[n] uniquely changes the frequency response, and vice versa.  This
+//   means the frequency-response canvas is strictly a derived, read-only view.
+//   Letting users draw on it would be physically meaningless.
+//
+// How the FFT derives the frequency response (computeWindowFFT):
+//   The editor zero-pads w[n] to 8× its length for a smoother curve, runs an
+//   FFT, computes 20·log10(|W(k)|) for each positive-frequency bin, and
+//   normalises so the peak bin = 0 dB.  This is exactly the convention used by
+//   scipy.signal.freqz and MATLAB's fvtool.
+//
+// Why symmetry matters:
+//   When w[n] = w[N−1−n] the DFT W(e^{jω}) is real-valued (zero-phase).
+//   Asymmetric windows introduce a frequency-dependent phase taper in each
+//   STFT frame, which can cause artefacts in resynthesis (overlap-add) and
+//   makes the magnitude spectrogram harder to interpret.  All standard windows
+//   (Hann, Hamming, Blackman) satisfy this constraint.
+
+// ── Register custom-window color in the global WIN_COLORS map ────────────────
+// Soft purple distinguishes custom windows from the four built-in types.
+WIN_COLORS["custom"] = "#9060e0";
+
+// ── Editor state ─────────────────────────────────────────────────────────────
+//
+// cwNodes : [{x: 0…1, y: 0…1}] sorted by x.
+//   In symmetric mode only x ∈ [0, 0.5] nodes are stored.
+//   In non-symmetric mode nodes span [0, 1].
+//
+// cwSymmetric : boolean — true = w[n] = w[N−1−n] enforced at sample time.
+//
+// cwDragNode : reference to the node currently being dragged (null if idle).
+
+let cwNodes = [
+  { x: 0.0, y: 0.08 },
+  { x: 0.5, y: 1.0  },
+];
+let cwSymmetric = true;
+let cwDragNode  = null;    // node being dragged
+let cwDragOffY  = 0;       // y offset within the node at drag start (unused for now)
+
+// ── Anchor x-positions — these nodes cannot be deleted or moved horizontally ─
+const CW_ANCHOR_SYM  = [0.0, 0.5];
+const CW_ANCHOR_ASYM = [0.0, 1.0];
+function cwIsAnchor(node) {
+  const anchors = cwSymmetric ? CW_ANCHOR_SYM : CW_ANCHOR_ASYM;
+  return anchors.some(ax => Math.abs(node.x - ax) < 0.006);
+}
+
+// ── Default node set (Hamming-like shape) ────────────────────────────────────
+const CW_DEFAULTS_SYM  = [{ x: 0.0, y: 0.08 }, { x: 0.5, y: 1.0 }];
+const CW_DEFAULTS_ASYM = [{ x: 0.0, y: 0.08 }, { x: 0.5, y: 1.0 }, { x: 1.0, y: 0.08 }];
+
+// ── DOM references ───────────────────────────────────────────────────────────
+const cwModal           = document.getElementById("customWinModal");
+const cwCloseBtn        = document.getElementById("cwCloseBtn");
+const cwTDCanvas        = document.getElementById("cwTimeDomainCanvas");
+const cwFreqCanvas_     = document.getElementById("cwFreqCanvas");  // underscore avoids name clash
+const cwSymmetryCheck   = document.getElementById("cwSymmetry");
+const cwResetBtn_       = document.getElementById("cwResetBtn");
+const cwNameInput       = document.getElementById("cwNameInput");
+const cwSaveBtn_        = document.getElementById("cwSaveBtn");
+const cwSavedListEl     = document.getElementById("cwSavedList");
+const cwWarningsEl      = document.getElementById("cwWarnings");
+const cwApplyBtn        = document.getElementById("cwApplyBtn");
+
+// =============================================================================
+// cwInterpolate(x, nodes) — linear interpolation along sorted node array
+// =============================================================================
+/**
+ * Returns the interpolated y value at normalized position x ∈ [0, 1].
+ * The nodes array must be sorted ascending by x.
+ *
+ * Edge cases:
+ *   - x before first node → clamp to first node's y
+ *   - x after last node   → clamp to last node's y
+ *   - Two nodes at same x → return average (prevents division by zero)
+ *
+ * @param {number}  x     - Normalized position [0, 1]
+ * @param {{x:number,y:number}[]} nodes
+ * @returns {number} interpolated amplitude [0, 1]
+ */
+function cwInterpolate(x, nodes) {
+  if (!nodes || nodes.length === 0) return 0;
+  if (nodes.length === 1) return nodes[0].y;
+  if (x <= nodes[0].x) return nodes[0].y;
+  if (x >= nodes[nodes.length - 1].x) return nodes[nodes.length - 1].y;
+
+  for (let i = 0; i < nodes.length - 1; i++) {
+    if (x >= nodes[i].x && x <= nodes[i + 1].x) {
+      const dx = nodes[i + 1].x - nodes[i].x;
+      if (dx < 1e-9) return (nodes[i].y + nodes[i + 1].y) / 2;  // guard div/0
+      const t = (x - nodes[i].x) / dx;
+      return nodes[i].y + t * (nodes[i + 1].y - nodes[i].y);
+    }
+  }
+  return nodes[nodes.length - 1].y;
+}
+
+// =============================================================================
+// cwSampleCurve(nodes, symmetric, N) → Float32Array
+// =============================================================================
+/**
+ * Converts the node-defined curve into a discrete window array of length N.
+ *
+ * Sampling formula:
+ *   x[n] = n / (N − 1)           (normalized position of sample n)
+ *
+ * Symmetric mode (w[n] = w[N−1−n]):
+ *   The nodes only cover x ∈ [0, 0.5].  For samples in the right half, the
+ *   position is folded back: xForInterp = 1 − x, which maps x > 0.5 onto
+ *   the left-half domain.  At x = 0.5 (the centre of an even-length window)
+ *   the value is the same from both sides — no discontinuity.
+ *
+ * Clamping:
+ *   All output values are clamped to [0, 1] regardless of node positions.
+ *
+ * @param {{x:number,y:number}[]} nodes
+ * @param {boolean}               symmetric
+ * @param {number}                N  - Frame size (must be ≥ 1)
+ * @returns {Float32Array}
+ */
+function cwSampleCurve(nodes, symmetric, N) {
+  const w = new Float32Array(Math.max(1, N));
+  const denom = Math.max(1, N - 1);  // avoid div/0 for N=1
+  for (let i = 0; i < N; i++) {
+    let x = i / denom;
+    // Fold the right half back onto the left-half domain for symmetric windows.
+    const xi = (symmetric && x > 0.5) ? (1 - x) : x;
+    w[i] = Math.max(0, Math.min(1, cwInterpolate(xi, nodes)));
+  }
+  return w;
+}
+
+// =============================================================================
+// cwGetWindowArray(type, N) — resolve any custom window type to a Float32Array
+// =============================================================================
+/**
+ * Returns the Float32Array of window coefficients for the given custom type.
+ *
+ * Called by both buildWindow() and generateWindow() so the same coefficients
+ * are used for STFT computation AND sidebar visualization.
+ *
+ * Type strings:
+ *   "custom"      → use current editor state (cwNodes, cwSymmetric)
+ *   "csaved:Name" → look up stored nodes/symmetric from localStorage
+ *
+ * Falls back to a rectangular window (all ones) if the stored data is missing
+ * or corrupt — this is safe and makes the failure visible in the spectrogram.
+ *
+ * @param {string} type - "custom" | "csaved:<name>"
+ * @param {number} N    - Frame size
+ * @returns {Float32Array}
+ */
+function cwGetWindowArray(type, N) {
+  if (type === "custom") {
+    return cwSampleCurve(cwNodes, cwSymmetric, N);
+  }
+  if (type.startsWith("csaved:")) {
+    const name  = type.slice(7);   // strip "csaved:" prefix
+    const saved = cwLoadAllSaved()[name];
+    if (saved && Array.isArray(saved.nodes) && saved.nodes.length >= 2) {
+      return cwSampleCurve(saved.nodes, !!saved.symmetric, N);
+    }
+  }
+  // Fallback: rectangular (all 1s) — makes the issue visible without crashing
+  const fallback = new Float32Array(Math.max(1, N));
+  fallback.fill(1.0);
+  return fallback;
+}
+
+// =============================================================================
+// renderCwTimeDomain() — draw the interactive time-domain editor canvas
+// =============================================================================
+/**
+ * Renders the current node set and interpolated curve onto cwTDCanvas.
+ *
+ * Visual layout:
+ *   Background: dark (#0f1115)
+ *   Grid:       horizontal at y=0, 0.5, 1; vertical at x=0, 0.5, 1
+ *   Symmetric indicator: right half is shaded and labelled "Mirror"
+ *   Curve:      solid colored line through all interpolated sample points
+ *               (mirrored right half is drawn dimmer in symmetric mode)
+ *   Nodes:      filled circles; anchor nodes (x=0, x=0.5 or x=1) use a
+ *               different color to communicate they can't be deleted
+ *   Axes:       tick labels for x and y, axis titles
+ */
+function renderCwTimeDomain() {
+  const dpr  = window.devicePixelRatio || 1;
+  const cssW = cwTDCanvas.offsetWidth  || 400;
+  const cssH = cwTDCanvas.offsetHeight || 220;
+  cwTDCanvas.width  = Math.round(cssW * dpr);
+  cwTDCanvas.height = Math.round(cssH * dpr);
+
+  const ctx = cwTDCanvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+
+  // ── Layout ────────────────────────────────────────────────────────────────
+  const PAD_L = 30, PAD_R = 10, PAD_T = 10, PAD_B = 26;
+  const plotW = cssW - PAD_L - PAD_R;
+  const plotH = cssH - PAD_T - PAD_B;
+
+  // Helpers: normalized position → canvas pixel
+  const xPx = (nx) => PAD_L + nx * plotW;
+  const yPx = (ny) => PAD_T + (1 - ny) * plotH;
+
+  // ── Background ────────────────────────────────────────────────────────────
+  ctx.fillStyle = "#0f1115";
+  ctx.fillRect(0, 0, cssW, cssH);
+
+  // ── Symmetric mode: shade right half to indicate "not editable" ───────────
+  if (cwSymmetric) {
+    ctx.fillStyle = "rgba(30, 35, 45, 0.40)";
+    ctx.fillRect(xPx(0.5), PAD_T, plotW * 0.5, plotH);
+  }
+
+  // ── Grid lines ────────────────────────────────────────────────────────────
+  ctx.strokeStyle = "#1e2128";
+  ctx.lineWidth   = 1;
+
+  for (const amp of [0, 0.5, 1]) {
+    const y = yPx(amp);
+    ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + plotW, y); ctx.stroke();
+  }
+  for (const nx of [0, 0.5, 1]) {
+    const x = xPx(nx);
+    ctx.beginPath(); ctx.moveTo(x, PAD_T); ctx.lineTo(x, PAD_T + plotH); ctx.stroke();
+  }
+
+  // ── Axis lines ────────────────────────────────────────────────────────────
+  ctx.strokeStyle = "#4a5060";
+  ctx.lineWidth   = 1;
+  ctx.beginPath(); ctx.moveTo(PAD_L, PAD_T); ctx.lineTo(PAD_L, PAD_T + plotH); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(PAD_L, PAD_T + plotH); ctx.lineTo(PAD_L + plotW, PAD_T + plotH); ctx.stroke();
+
+  // ── Tick marks and labels ─────────────────────────────────────────────────
+  ctx.font = "10px Consolas, Menlo, monospace";
+
+  // Y-axis
+  ctx.textAlign = "right"; ctx.textBaseline = "middle"; ctx.fillStyle = "#6a6f7a";
+  ctx.strokeStyle = "#4a5060"; ctx.lineWidth = 1;
+  for (const amp of [0, 0.5, 1]) {
+    const y = yPx(amp);
+    ctx.beginPath(); ctx.moveTo(PAD_L - 4, y); ctx.lineTo(PAD_L, y); ctx.stroke();
+    ctx.fillText(amp === 1 ? "1" : amp === 0 ? "0" : ".5", PAD_L - 6, y);
+  }
+
+  // X-axis ticks
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (const nx of [0, 0.5, 1]) {
+    const x = xPx(nx);
+    ctx.beginPath(); ctx.moveTo(x, PAD_T + plotH); ctx.lineTo(x, PAD_T + plotH + 4); ctx.stroke();
+    ctx.fillText(nx === 0 ? "0" : nx === 1 ? "1" : ".5", x, PAD_T + plotH + 6);
+  }
+
+  // Axis title
+  ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.fillStyle = "#4a5060";
+  ctx.fillText("n/N", PAD_L + plotW + 2, PAD_T + plotH + 6);
+
+  // Symmetric mode label on the right half
+  if (cwSymmetric) {
+    ctx.font = "9px Consolas, Menlo, monospace";
+    ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.fillStyle = "#3a4050";
+    ctx.fillText("Mirror", xPx(0.75), PAD_T + 4);
+    ctx.font = "10px Consolas, Menlo, monospace";
+  }
+
+  // ── Interpolated curve ────────────────────────────────────────────────────
+  // Sample at 200 points for a smooth curve regardless of node count.
+  const NUM_SAMPLES = 200;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(PAD_L, PAD_T, plotW, plotH);
+  ctx.clip();
+
+  // Left half (editable region) — full-brightness curve
+  ctx.beginPath();
+  ctx.strokeStyle = WIN_COLORS["custom"];
+  ctx.lineWidth   = 1.5;
+  ctx.lineJoin    = "round";
+  const xLimit = cwSymmetric ? 0.5 : 1.0;
+  for (let i = 0; i <= NUM_SAMPLES; i++) {
+    const nx = (i / NUM_SAMPLES) * xLimit;
+    const ny = cwInterpolate(nx, cwNodes);
+    const px = xPx(nx);
+    const py = yPx(Math.max(0, Math.min(1, ny)));
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+
+  // Right half (mirrored region) — dimmer curve
+  if (cwSymmetric) {
+    ctx.beginPath();
+    ctx.strokeStyle = "rgba(144, 96, 224, 0.35)";
+    ctx.lineWidth   = 1.5;
+    ctx.lineJoin    = "round";
+    for (let i = 0; i <= NUM_SAMPLES; i++) {
+      const nx  = 0.5 + (i / NUM_SAMPLES) * 0.5;   // x ∈ [0.5, 1]
+      const nxM = 1 - nx;                            // mirror position
+      const ny  = cwInterpolate(nxM, cwNodes);
+      const px  = xPx(nx);
+      const py  = yPx(Math.max(0, Math.min(1, ny)));
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  }
+
+  ctx.restore();  // end clip
+
+  // ── Nodes (only in editable region) ───────────────────────────────────────
+  const NODE_R       = 5.5;                     // normal node radius (CSS px)
+  const ANCHOR_COLOR = "#5a8fff";              // blue for anchor nodes (unmovable in x)
+  const NORMAL_COLOR = WIN_COLORS["custom"];   // purple for regular nodes
+
+  for (const node of cwNodes) {
+    // In symmetric mode, nodes are only in [0, 0.5] — always visible
+    const px = xPx(node.x);
+    const py = yPx(node.y);
+    const isAnchor = cwIsAnchor(node);
+
+    ctx.beginPath();
+    ctx.arc(px, py, NODE_R, 0, Math.PI * 2);
+    ctx.fillStyle   = isAnchor ? ANCHOR_COLOR : NORMAL_COLOR;
+    ctx.fill();
+    ctx.strokeStyle = "#0f1115";
+    ctx.lineWidth   = 1.5;
+    ctx.stroke();
+  }
+}
+
+// =============================================================================
+// renderCwFreqResponse() — compute FFT and render read-only frequency plot
+// =============================================================================
+/**
+ * Samples the current curve at CONFIG.frameSize points, computes the FFT,
+ * and renders the magnitude spectrum using the existing renderFrequencyResponse().
+ *
+ * IMPORTANT: This function does NOT attach any event handlers to cwFreqCanvas_.
+ * The canvas must remain completely inert — zero interactivity — so that
+ * the conceptual separation between "editable time domain" and "derived
+ * frequency domain" is reinforced both visually and technically.
+ *
+ * The FFT uses 8× zero-padding (handled internally by computeWindowFFT) to
+ * produce a smooth, high-resolution sidelobe display even for small N.
+ */
+function renderCwFreqResponse() {
+  const N = Math.max(4, parseInt(frameSizeInput.value, 10) || 256);
+  const windowArray = cwSampleCurve(cwNodes, cwSymmetric, N);
+  const freqData    = computeWindowFFT(windowArray);
+
+  // renderFrequencyResponse() renders to the canvas without touching event
+  // listeners — it is purely a drawing function, so calling it here is safe.
+  renderFrequencyResponse(cwFreqCanvas_, [{
+    data:  freqData,
+    color: WIN_COLORS["custom"],
+    label: "Custom",
+  }]);
+}
+
+// =============================================================================
+// cwValidate() — generate DSP warnings for the current node state
+// =============================================================================
+/**
+ * Checks the current window design for common DSP pitfalls and populates
+ * the #cwWarnings element with human-readable advisory messages.
+ *
+ * Checks performed:
+ *
+ *   1. End discontinuity — if either end of the window is significantly above
+ *      zero, the window does not taper smoothly and will exhibit high sidelobes
+ *      (similar to the rectangular window's −13 dB sinc envelope).  The
+ *      threshold 0.05 is a practical limit — Hamming's ends are ~0.08, which
+ *      already produces noticeable leakage compared to Hann/Blackman.
+ *
+ *   2. Non-symmetric design — when symmetry is disabled the user can draw
+ *      an asymmetric window.  This is warned but not prevented, since
+ *      asymmetric windows have legitimate uses (e.g. causal filter design).
+ *
+ *   3. Sharp transition — if two adjacent nodes form a near-vertical segment
+ *      (|Δy| > 0.5) the resulting window approximates a step discontinuity,
+ *      substantially degrading spectral leakage performance.
+ */
+function cwValidate() {
+  const N = Math.max(4, parseInt(frameSizeInput.value, 10) || 256);
+  const w = cwSampleCurve(cwNodes, cwSymmetric, N);
+
+  const warnings = [];
+
+  // 1. High end values → poor leakage
+  const endThresh = 0.05;
+  if (w[0] > endThresh || w[N - 1] > endThresh) {
+    warnings.push(
+      `⚠ End values are high (start=${w[0].toFixed(2)}, end=${w[N-1].toFixed(2)}).` +
+      " Windows that don't taper to ≈0 have elevated sidelobes (high spectral leakage)."
+    );
+  }
+
+  // 2. Non-symmetric
+  if (!cwSymmetric) {
+    warnings.push(
+      "⚠ Symmetry is OFF. Asymmetric windows introduce phase distortion in STFT frames."
+    );
+  }
+
+  // 3. Sharp transitions between adjacent nodes
+  const sorted = [...cwNodes].sort((a, b) => a.x - b.x);
+  for (let i = 0; i < sorted.length - 1; i++) {
+    if (Math.abs(sorted[i + 1].y - sorted[i].y) > 0.5) {
+      warnings.push(
+        "⚠ Sharp transition detected between nodes — this approximates a discontinuity" +
+        " and will cause high sidelobes."
+      );
+      break;  // one warning per check is enough
+    }
+  }
+
+  cwWarningsEl.textContent = warnings.join("\n");
+}
+
+// =============================================================================
+// openCustomWindowEditor() / closeCustomWindowEditor()
+// =============================================================================
+function openCustomWindowEditor() {
+  cwModal.classList.remove("hidden");
+  cwCloseBtn.focus();
+  // Render the editor with the current state so the canvas is immediately visible.
+  renderCwTimeDomain();
+  renderCwFreqResponse();
+  cwValidate();
+  cwRefreshSavedList();
+}
+
+function closeCustomWindowEditor() {
+  cwModal.classList.add("hidden");
+  windowSelect.focus();
+}
+
+// =============================================================================
+// cwRefreshSavedList() — rebuild the saved-windows list in the modal
+// =============================================================================
+/**
+ * Re-renders the list of saved custom windows inside #cwSavedList.
+ * Each entry has:
+ *   - Name (clickable → loads into editor)
+ *   - "Use" button → applies as CONFIG.windowType without opening for editing
+ *   - Delete button → removes from localStorage and select
+ */
+function cwRefreshSavedList() {
+  cwSavedListEl.innerHTML = "";
+  const all = cwLoadAllSaved();
+  const names = Object.keys(all);
+
+  if (names.length === 0) {
+    const empty = document.createElement("div");
+    empty.style.cssText = "font-size:10px;color:#3a4050;padding:3px 0";
+    empty.textContent = "No saved windows yet";
+    cwSavedListEl.appendChild(empty);
+    return;
+  }
+
+  for (const name of names) {
+    const row = document.createElement("div");
+    row.className = "cw-saved-item";
+
+    const nameBtn = document.createElement("span");
+    nameBtn.className   = "cw-saved-name";
+    nameBtn.textContent = name;
+    nameBtn.title       = "Load into editor";
+    nameBtn.addEventListener("click", () => cwLoadIntoEditor(name));
+
+    const useBtn = document.createElement("button");
+    useBtn.className   = "cw-saved-use";
+    useBtn.textContent = "Use";
+    useBtn.title       = "Apply this window to STFT (sets window select)";
+    useBtn.addEventListener("click", () => cwApplySavedWindow(name));
+
+    const delBtn = document.createElement("button");
+    delBtn.className   = "cw-saved-del";
+    delBtn.textContent = "✕";
+    delBtn.title       = "Delete this saved window";
+    delBtn.addEventListener("click", () => cwDeleteSavedWindow(name));
+
+    row.appendChild(nameBtn);
+    row.appendChild(useBtn);
+    row.appendChild(delBtn);
+    cwSavedListEl.appendChild(row);
+  }
+}
+
+// =============================================================================
+// localStorage helpers
+// =============================================================================
+/**
+ * Reads the entire customWindows map from localStorage.
+ * Returns an empty object on any parse error to avoid crashing.
+ *
+ * Storage format:
+ *   localStorage["customWindows"] = JSON.stringify({
+ *     "MyWindow": { name, nodes: [{x,y}…], symmetric: bool }
+ *   })
+ *
+ * Only {name, nodes, symmetric} are stored — never the sampled Float32Array.
+ * The array is always re-computed from nodes at runtime so it automatically
+ * adapts to whatever frame size is in use.
+ */
+function cwLoadAllSaved() {
+  try {
+    const raw = localStorage.getItem("customWindows");
+    return raw ? JSON.parse(raw) : {};
+  } catch (_) { return {}; }
+}
+
+/** Persists the entire map to localStorage.  Silently swallows QuotaExceededError. */
+function cwSaveAll(data) {
+  try {
+    localStorage.setItem("customWindows", JSON.stringify(data));
+  } catch (_) { /* storage full or unavailable — fail silently */ }
+}
+
+/** Saves the current editor state under `name`. Overwrites if already exists. */
+function cwSaveCurrentAs(name) {
+  if (!name || !name.trim()) return;
+  const all  = cwLoadAllSaved();
+  all[name]  = { name, nodes: cwNodes.map(n => ({ x: n.x, y: n.y })), symmetric: cwSymmetric };
+  cwSaveAll(all);
+}
+
+/** Loads a saved window's nodes/symmetric into the editor. */
+function cwLoadIntoEditor(name) {
+  const all   = cwLoadAllSaved();
+  const saved = all[name];
+  if (!saved || !Array.isArray(saved.nodes)) return;
+
+  cwNodes     = saved.nodes.map(n => ({ x: n.x, y: n.y }));
+  cwSymmetric = !!saved.symmetric;
+  cwSymmetryCheck.checked = cwSymmetric;
+  cwNameInput.value       = name;
+
+  renderCwTimeDomain();
+  renderCwFreqResponse();
+  cwValidate();
+}
+
+/** Deletes a saved window from localStorage and repopulates the select. */
+function cwDeleteSavedWindow(name) {
+  const all = cwLoadAllSaved();
+  delete all[name];
+  cwSaveAll(all);
+  cwRefreshSavedList();
+  cwPopulateSelect();
+  // If currently selected, fall back to built-in hamming
+  if (windowSelect.value === `csaved:${name}`) {
+    windowSelect.value  = "hamming";
+    CONFIG.windowType   = "hamming";
+    renderWindowPanel();
+  }
+}
+
+/** Applies a saved window to the STFT (sets windowSelect + CONFIG) and closes modal. */
+function cwApplySavedWindow(name) {
+  const type = `csaved:${name}`;
+  // Ensure the option exists in the select (should always be true after cwPopulateSelect)
+  if (!Array.from(windowSelect.options).some(o => o.value === type)) {
+    cwPopulateSelect();
+  }
+  windowSelect.value = type;
+  CONFIG.windowType  = type;
+  closeCustomWindowEditor();
+  renderWindowPanel();
+}
+
+// =============================================================================
+// cwPopulateSelect() — sync saved window names into the window type <select>
+// =============================================================================
+/**
+ * Rebuilds the <option> list in #windowType to include all saved custom windows.
+ *
+ * Built-in options (rectangular, hann, hamming, blackman, custom) are left
+ * untouched.  Only the dynamic "csaved:..." options are replaced.
+ *
+ * Called on: page load, after save, after delete, after load.
+ */
+function cwPopulateSelect() {
+  // Remove previously added "csaved:" options
+  Array.from(windowSelect.options)
+    .filter(o => o.value.startsWith("csaved:"))
+    .forEach(o => o.remove());
+
+  const all = cwLoadAllSaved();
+  for (const name of Object.keys(all)) {
+    const opt   = document.createElement("option");
+    opt.value   = `csaved:${name}`;
+    opt.textContent = `⊙ ${name}`;
+    windowSelect.appendChild(opt);
+  }
+}
+
+// =============================================================================
+// Canvas coordinate helpers (used by mouse / touch handlers)
+// =============================================================================
+/** Returns the plot-area geometry for cwTDCanvas. */
+function cwPlotGeom() {
+  const cssW = cwTDCanvas.offsetWidth  || 400;
+  const cssH = cwTDCanvas.offsetHeight || 220;
+  const PAD_L = 30, PAD_R = 10, PAD_T = 10, PAD_B = 26;
+  return {
+    PAD_L, PAD_R, PAD_T, PAD_B,
+    plotW: cssW - PAD_L - PAD_R,
+    plotH: cssH - PAD_T - PAD_B,
+  };
+}
+
+/**
+ * Converts a mouse/touch event to normalized (nx, ny) ∈ [0,1]×[0,1].
+ * Returns null if the pointer is outside the canvas.
+ */
+function cwEventToNorm(e) {
+  const rect  = cwTDCanvas.getBoundingClientRect();
+  const { PAD_L, PAD_T, plotW, plotH } = cwPlotGeom();
+  const src   = (e.touches && e.touches.length > 0)
+              ? e.touches[0]
+              : (e.changedTouches && e.changedTouches.length > 0)
+              ? e.changedTouches[0]
+              : e;
+  const cx = src.clientX - rect.left;
+  const cy = src.clientY - rect.top;
+  const nx = (cx - PAD_L) / plotW;
+  const ny = 1 - (cy - PAD_T) / plotH;
+  return { nx, ny };
+}
+
+/** Returns the node closest to (nx, ny) within HIT_RADIUS CSS-px, or null. */
+function cwHitTest(nx, ny) {
+  const { plotW, plotH } = cwPlotGeom();
+  const HIT_PX = 10;  // hit radius in CSS pixels
+  let best = null, bestDist = Infinity;
+  for (const node of cwNodes) {
+    const dx = (node.x - nx) * plotW;
+    const dy = (node.y - ny) * plotH;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < HIT_PX && dist < bestDist) {
+      bestDist = dist;
+      best     = node;
+    }
+  }
+  return best;
+}
+
+// =============================================================================
+// Canvas interaction — add / drag / delete nodes
+// =============================================================================
+//
+// Per user-memory note on drag interactions:
+//   - mousemove and mouseup are attached to `document`, not the canvas, so
+//     dragging to the canvas edge (or off-screen) still works.
+//   - Listeners are removed in the mouseup handler to avoid leaks.
+
+function cwOnMouseDown(e) {
+  e.preventDefault();
+  const { nx, ny } = cwEventToNorm(e);
+
+  // Right-click → delete node
+  if (e.button === 2) {
+    const hit = cwHitTest(nx, ny);
+    if (hit && !cwIsAnchor(hit)) {
+      cwNodes = cwNodes.filter(n => n !== hit);
+      cwAfterEdit();
+    }
+    return;
+  }
+
+  // Left-click: hit test first (drag), otherwise add
+  const hit = cwHitTest(nx, ny);
+  if (hit) {
+    // Start drag
+    cwDragNode = hit;
+    document.addEventListener("mousemove", cwOnDragMove);
+    document.addEventListener("mouseup",   cwOnDragEnd);
+  } else {
+    // Add a new node if in the editable region
+    const maxX = cwSymmetric ? 0.5 : 1.0;
+    if (nx >= 0 && nx <= maxX && ny >= 0 && ny <= 1) {
+      const newNode = {
+        x: Math.max(0, Math.min(maxX, nx)),
+        y: Math.max(0, Math.min(1,   ny)),
+      };
+      cwNodes.push(newNode);
+      cwNodes.sort((a, b) => a.x - b.x);
+      cwAfterEdit();
+    }
+  }
+}
+
+function cwOnDragMove(e) {
+  if (!cwDragNode) return;
+  e.preventDefault();
+
+  const { nx, ny } = cwEventToNorm(e);
+  const maxX = cwSymmetric ? 0.5 : 1.0;
+
+  // Anchor nodes: only y can change
+  if (!cwIsAnchor(cwDragNode)) {
+    // Find neighbor x-values to prevent nodes crossing each other
+    const idx   = cwNodes.indexOf(cwDragNode);
+    const prevX = idx > 0                   ? cwNodes[idx - 1].x + 0.003 : 0;
+    const nextX = idx < cwNodes.length - 1  ? cwNodes[idx + 1].x - 0.003 : maxX;
+    cwDragNode.x = Math.max(prevX, Math.min(nextX, nx));
+  }
+  cwDragNode.y = Math.max(0, Math.min(1, ny));
+
+  cwAfterEdit();
+}
+
+function cwOnDragEnd() {
+  cwDragNode = null;
+  document.removeEventListener("mousemove", cwOnDragMove);
+  document.removeEventListener("mouseup",   cwOnDragEnd);
+}
+
+// Touch support — map to the same mouse handlers
+function cwOnTouchStart(e) {
+  e.preventDefault();
+  const { nx, ny } = cwEventToNorm(e);
+  const hit = cwHitTest(nx, ny);
+  if (hit) {
+    cwDragNode = hit;
+    document.addEventListener("touchmove",  cwOnTouchMove,  { passive: false });
+    document.addEventListener("touchend",   cwOnTouchEnd);
+  } else {
+    const maxX = cwSymmetric ? 0.5 : 1.0;
+    if (nx >= 0 && nx <= maxX && ny >= 0 && ny <= 1) {
+      const newNode = {
+        x: Math.max(0, Math.min(maxX, nx)),
+        y: Math.max(0, Math.min(1,   ny)),
+      };
+      cwNodes.push(newNode);
+      cwNodes.sort((a, b) => a.x - b.x);
+      cwAfterEdit();
+    }
+  }
+}
+
+function cwOnTouchMove(e) {
+  if (!cwDragNode) return;
+  e.preventDefault();
+  cwOnDragMove(e);  // reuse same logic — cwEventToNorm handles touches
+}
+
+function cwOnTouchEnd() {
+  cwDragNode = null;
+  document.removeEventListener("touchmove", cwOnTouchMove);
+  document.removeEventListener("touchend",  cwOnTouchEnd);
+}
+
+// Context menu → delete node (right-click)
+function cwOnContextMenu(e) {
+  e.preventDefault();
+  const { nx, ny } = cwEventToNorm(e);
+  const hit = cwHitTest(nx, ny);
+  if (hit && !cwIsAnchor(hit)) {
+    cwNodes = cwNodes.filter(n => n !== hit);
+    cwAfterEdit();
+  }
+}
+
+/**
+ * Called after every node edit (add/drag/delete).
+ * Re-renders both canvases and re-runs validation.
+ */
+function cwAfterEdit() {
+  renderCwTimeDomain();
+  renderCwFreqResponse();
+  cwValidate();
+}
+
+// Attach event listeners to the TIME-DOMAIN canvas only.
+// The frequency canvas (cwFreqCanvas_) gets NO event listeners — it is
+// intentionally inert so users cannot interact with the "derived" view.
+cwTDCanvas.addEventListener("mousedown",   cwOnMouseDown);
+cwTDCanvas.addEventListener("contextmenu", cwOnContextMenu);
+cwTDCanvas.addEventListener("touchstart",  cwOnTouchStart, { passive: false });
+
+// =============================================================================
+// cwSymmetry / cwReset control handlers
+// =============================================================================
+cwSymmetryCheck.addEventListener("change", () => {
+  const wasSymmetric = cwSymmetric;
+  cwSymmetric        = cwSymmetryCheck.checked;
+
+  if (cwSymmetric && !wasSymmetric) {
+    // Non-symmetric → symmetric: keep only left-half nodes (x ≤ 0.5).
+    // Any right-half nodes are discarded because the right side is now derived
+    // by mirroring, not stored independently.
+    cwNodes = cwNodes.filter(n => n.x <= 0.5 + 0.005);
+    // Ensure anchors at x=0 and x=0.5 always exist
+    cwEnsureAnchors();
+  } else if (!cwSymmetric && wasSymmetric) {
+    // Symmetric → non-symmetric: expand the node list by mirroring left nodes.
+    // This gives the user a starting point that is still symmetric before
+    // they start adding asymmetric nodes.
+    const leftNodes  = cwNodes.filter(n => Math.abs(n.x - 0.5) > 0.005);
+    const rightNodes = leftNodes
+      .filter(n => n.x > 0.005)           // skip x=0 anchor (already at x=1 mirror)
+      .map(n => ({ x: 1 - n.x, y: n.y }))
+      .reverse();
+    // Remove the x=0.5 anchor (it becomes an interior node in asymmetric mode)
+    // and replace x=1 anchor
+    cwNodes = cwNodes.filter(n => Math.abs(n.x - 0.5) > 0.005);
+    cwNodes = [...cwNodes, ...rightNodes];
+    cwEnsureAnchors();
+    cwNodes.sort((a, b) => a.x - b.x);
+  }
+
+  cwAfterEdit();
+});
+
+/** Ensures the mandatory anchor nodes at x=0 and x=0.5 (sym) or x=1 (asym) exist. */
+function cwEnsureAnchors() {
+  const anchors = cwSymmetric ? CW_ANCHOR_SYM : CW_ANCHOR_ASYM;
+  const DEFAULT_Y = [0.08, 1.0, 0.08];  // default y for [0, 0.5, 1] respectively
+  for (let i = 0; i < anchors.length; i++) {
+    const ax = anchors[i];
+    if (!cwNodes.some(n => Math.abs(n.x - ax) < 0.005)) {
+      cwNodes.push({ x: ax, y: DEFAULT_Y[i] ?? 0.08 });
+    }
+  }
+  cwNodes.sort((a, b) => a.x - b.x);
+}
+
+cwResetBtn_.addEventListener("click", () => {
+  cwNodes     = cwSymmetric
+    ? CW_DEFAULTS_SYM.map(n  => ({ ...n }))
+    : CW_DEFAULTS_ASYM.map(n => ({ ...n }));
+  cwAfterEdit();
+});
+
+// =============================================================================
+// Save / Apply / Close controls
+// =============================================================================
+cwSaveBtn_.addEventListener("click", () => {
+  const name = cwNameInput.value.trim();
+  if (!name) {
+    cwWarningsEl.textContent = "⚠ Enter a name before saving.";
+    cwNameInput.focus();
+    return;
+  }
+  cwSaveCurrentAs(name);
+  cwPopulateSelect();
+  cwRefreshSavedList();
+  // Switch the select to the newly saved window
+  cwApplySavedWindow(name);
+});
+
+cwApplyBtn.addEventListener("click", () => {
+  // Apply the current (possibly unsaved) editor state
+  windowSelect.value = "custom";
+  CONFIG.windowType  = "custom";
+  closeCustomWindowEditor();
+  renderWindowPanel();
+});
+
+cwCloseBtn.addEventListener("click", closeCustomWindowEditor);
+
+// Close on backdrop click
+cwModal.addEventListener("click", (e) => {
+  if (e.target === cwModal) closeCustomWindowEditor();
+});
+
+// Close on Escape (only when the custom window modal is open)
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !cwModal.classList.contains("hidden")) {
+    closeCustomWindowEditor();
+  }
+});
+
+// =============================================================================
+// Window select: open editor automatically when "Custom (Edit…)" is chosen
+// =============================================================================
+windowSelect.addEventListener("change", () => {
+  if (windowSelect.value === "custom") {
+    openCustomWindowEditor();
+  }
+});
+
+// =============================================================================
+// frameSizeInput change: refresh frequency response if editor is open,
+// and re-run validation (end thresholds are computed at the current N).
+// =============================================================================
+frameSizeInput.addEventListener("input",  () => {
+  if (!cwModal.classList.contains("hidden")) {
+    renderCwFreqResponse();
+    cwValidate();
+  }
+});
+
+// =============================================================================
+// Initialization — populate saved windows and ensure anchor nodes exist
+// =============================================================================
+cwEnsureAnchors();
+cwPopulateSelect();
+

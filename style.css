@@ -1658,3 +1658,455 @@ input[type="range"]:focus::-webkit-slider-thumb {
 .info-table code {
   white-space: nowrap;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Custom Window Editor Modal
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * Full-viewport overlay, same stacking approach as #infoModal.
+ * z-index 300 ensures it sits above the info modal (200) if both are open.
+ */
+.cw-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(10, 11, 15, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.cw-modal.hidden {
+  display: none;
+}
+
+/* Modal container — wider than the info modal to fit two canvases side by side */
+.cw-modal-box {
+  background: #1a1d23;
+  border: 1px solid #2e3138;
+  border-radius: 3px;
+  width: 100%;
+  max-width: 820px;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+.cw-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #2e3138;
+  flex-shrink: 0;
+}
+
+.cw-modal-title {
+  flex: 1;
+  font-size: 12px;
+  font-weight: bold;
+  color: #e6e6e6;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cw-modal-close {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: #6a6f7a;
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 2px 7px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.cw-modal-close:hover {
+  color: #e05252;
+  border-color: #3a3f4a;
+  background: #252830;
+}
+
+/* ── Body: two-column layout ─────────────────────────────────────────────── */
+.cw-modal-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.cw-col {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+/* Left column: time-domain editor (interactive) — takes ~60% of width */
+.cw-col-left {
+  flex: 6;
+  border-right: 1px solid #2e3138;
+  overflow: hidden;
+}
+
+/* Right column: freq response + save/load controls — ~40% width, scrollable */
+.cw-col-right {
+  flex: 4;
+  overflow-y: auto;
+}
+
+/* Column header: title + badge in one row */
+.cw-col-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.cw-col-title {
+  font-size: 10px;
+  color: #6a6f7a;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/*
+ * Badges signal editability at a glance — a critical UX requirement when
+ * the two canvases look visually similar but serve very different roles.
+ */
+.cw-badge {
+  font-size: 9px;
+  font-weight: bold;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 2px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+/* Green badge: this canvas accepts input */
+.cw-badge-edit {
+  background: #162a1e;
+  color: #44bb77;
+  border: 1px solid #2a6a3a;
+}
+
+/* Blue badge: this canvas is read-only / computed */
+.cw-badge-fft {
+  background: #141e36;
+  color: #5a8fff;
+  border: 1px solid #1e3066;
+}
+
+/* ── Time-domain editor canvas ───────────────────────────────────────────── */
+/*
+ * cursor: crosshair signals interactivity (add nodes by clicking).
+ * image-rendering: pixelated keeps axis lines crisp.
+ * The flex-shrink:0 prevents the canvas from collapsing in the flex column.
+ */
+.cw-td-canvas {
+  display: block;
+  width: 100%;
+  height: 220px;
+  background: #0f1115;
+  border: 1px solid #2e3138;
+  border-radius: 2px;
+  cursor: crosshair;
+  image-rendering: pixelated;
+  flex-shrink: 0;
+  touch-action: none;   /* prevent browser scroll interfering with node drag */
+}
+
+.cw-td-hint {
+  font-size: 9px;
+  color: #3a4050;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+.cw-td-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.cw-check-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #9aa0ad;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.cw-check-label input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: #5a8fff;
+  flex-shrink: 0;
+}
+
+.cw-td-sym-note {
+  font-size: 9px;
+  color: #4a5060;
+}
+
+/* ── Shared button base ──────────────────────────────────────────────────── */
+.cw-btn {
+  background: #252830;
+  color: #c8cdd6;
+  border: 1px solid #3a3f4a;
+  border-radius: 2px;
+  padding: 3px 10px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.cw-btn:hover {
+  background: #2e333d;
+  border-color: #5a8fff;
+  color: #e6e6e6;
+}
+
+/* Save button — primary action accent */
+.cw-btn-primary {
+  background: #1a2e52;
+  color: #b0c8f0;
+  border-color: #2a4a8a;
+}
+
+.cw-btn-primary:hover {
+  background: #243c6a;
+  border-color: #5a8fff;
+  color: #e0eeff;
+}
+
+/* Apply to STFT — full-width call-to-action in footer */
+.cw-btn-apply {
+  background: #1e4a9a;
+  color: #e6e6e6;
+  border: 1px solid #2a5bbf;
+  padding: 5px 22px;
+  font-size: 12px;
+  font-weight: bold;
+  letter-spacing: 0.05em;
+}
+
+.cw-btn-apply:hover {
+  background: #2456b8;
+  border-color: #4a7fdf;
+}
+
+/* ── Frequency response canvas (read-only) ────────────────────────────────── */
+/*
+ * Identical visual treatment to .cw-td-canvas EXCEPT:
+ *   - cursor defaults to 'default' (no crosshair — not interactive)
+ *   - No touch-action override needed (no event handlers attached)
+ *
+ * The read-only constraint is enforced in JS by never attaching event
+ * listeners to this element; the CSS just makes the read-only intent visible.
+ */
+.cw-freq-canvas {
+  display: block;
+  width: 100%;
+  height: 180px;
+  background: #0f1115;
+  border: 1px solid #2e3138;
+  border-radius: 2px;
+  image-rendering: pixelated;
+  flex-shrink: 0;
+  cursor: default;   /* NOT crosshair — this canvas is NOT interactive */
+}
+
+.cw-freq-note {
+  font-size: 9px;
+  color: #2e3440;
+  letter-spacing: 0.03em;
+  font-style: italic;
+  flex-shrink: 0;
+}
+
+/* ── Save / Load area ────────────────────────────────────────────────────── */
+.cw-save-area {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.cw-save-row {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.cw-name-input {
+  flex: 1;
+  background: #252830;
+  color: #e6e6e6;
+  border: 1px solid #3a3f4a;
+  border-radius: 2px;
+  padding: 3px 6px;
+  font-family: inherit;
+  font-size: 11px;
+  outline: none;
+  min-width: 0;
+  min-height: 28px;
+}
+
+.cw-name-input:focus {
+  border-color: #5a8fff;
+  outline: 1px solid #5a8fff;
+  outline-offset: 0;
+}
+
+/* ── Saved-windows list ──────────────────────────────────────────────────── */
+.cw-saved-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 110px;
+  overflow-y: auto;
+}
+
+.cw-saved-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 4px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+}
+
+.cw-saved-item:hover {
+  background: #1e2228;
+  border-color: #2e3138;
+}
+
+/* Clicking the name loads it into the editor */
+.cw-saved-name {
+  flex: 1;
+  font-size: 11px;
+  color: #9aa0ad;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.cw-saved-name:hover {
+  color: #5a8fff;
+}
+
+/* "Use" button: applies the saved window to STFT directly */
+.cw-saved-use {
+  font-size: 10px;
+  padding: 1px 6px;
+  background: #1a2a3a;
+  color: #5a8fff;
+  border: 1px solid #2a3a5a;
+  border-radius: 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.cw-saved-use:hover {
+  background: #243658;
+  border-color: #5a8fff;
+}
+
+/* Delete button for each saved window */
+.cw-saved-del {
+  background: transparent;
+  border: none;
+  color: #3a4050;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+
+.cw-saved-del:hover {
+  color: #e05252;
+}
+
+/* ── Validation warnings ─────────────────────────────────────────────────── */
+.cw-warnings {
+  font-size: 10px;
+  color: #c8a030;
+  line-height: 1.6;
+  flex-shrink: 0;
+  min-height: 1em;
+}
+
+.cw-warnings:empty {
+  display: none;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+.cw-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid #2e3138;
+  flex-shrink: 0;
+}
+
+.cw-footer-note {
+  flex: 1;
+  font-size: 10px;
+  color: #4a5060;
+  letter-spacing: 0.03em;
+}
+
+/* ── Collapsed sidebar: the custom window modal is position:fixed and always
+   accessible regardless of whether the sidebar is collapsed ─────────────── */
+
+/* ── Mobile: stack both columns vertically ───────────────────────────────── */
+@media (max-width: 640px) {
+  .cw-modal-box {
+    max-height: 95vh;
+  }
+
+  .cw-modal-body {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .cw-col-left {
+    border-right: none;
+    border-bottom: 1px solid #2e3138;
+    overflow: visible;
+  }
+
+  .cw-col-right {
+    overflow: visible;
+  }
+
+  .cw-td-canvas {
+    height: 160px;
+  }
+
+  .cw-freq-canvas {
+    height: 140px;
+  }
+}
