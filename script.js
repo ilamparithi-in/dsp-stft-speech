@@ -2645,6 +2645,7 @@ document.addEventListener("keydown", function (e) {
 // ── DOM refs ─────────────────────────────────────────────────────────────────
 const winVizCanvas  = document.getElementById("winVizCanvas");
 const winEquationEl = document.getElementById("winEquation");
+const winFreqCanvas = document.getElementById("winFreqCanvas");
 
 // ── Window colours — distinct, high-contrast on the dark background ──────────
 const WIN_COLORS = {
@@ -2736,6 +2737,480 @@ function generateWindow(type, N) {
     }
   }
   return w;
+}
+
+// =============================================================================
+// nextPow2(n) — smallest power of 2 ≥ n
+// =============================================================================
+/**
+ * @param {number} n
+ * @returns {number}
+ */
+function nextPow2(n) {
+  let p = 1;
+  while (p < n) p <<= 1;
+  return p;
+}
+
+// =============================================================================
+// computeWindowFFT(windowData) → Float32Array
+// =============================================================================
+/**
+ * Computes the magnitude frequency response of a window function in dB.
+ *
+ * Why zero-padding?
+ *   A window of length N has only N points in the time domain, giving an FFT
+ *   with N bins spaced at fs/N Hz.  Zero-padding to N_fft = 8·N interpolates
+ *   the DTFT, revealing the smooth shape of the main lobe and sidelobes at 8×
+ *   finer frequency resolution — exactly like scipy.signal.freqz.  The extra
+ *   bins are mathematically equivalent to evaluating the DTFT at more
+ *   frequencies; they add no new information but make the curve smooth and
+ *   let the eye trace the sidelobe decay without aliasing artefacts.
+ *
+ * Why dB scale?
+ *   Window sidelobe levels span 4–5 orders of magnitude (−13 dB rectangular
+ *   to −74 dB Blackman).  A linear amplitude axis would compress all the
+ *   interesting sidelobe structure into an imperceptible smear at the bottom.
+ *   The dB scale expands the sidelobe region, making the leakage rejection of
+ *   each window directly readable — e.g. "Blackman: −74 dB sidelobes means
+ *   a tone at 1 kHz contributes at most −74 dB to any other bin."
+ *
+ * Relation between main lobe width and frequency resolution:
+ *   The width of the main lobe (in bins) is the frequency resolution cost of
+ *   the window.  Rectangular: 2 bins wide → sharpest resolution but −13 dB
+ *   sidelobes.  Blackman: ≈6 bins wide → three times worse resolution but
+ *   −74 dB sidelobes.  The spectrogram inherits this trade-off: use Blackman
+ *   on audio with a wide dynamic range, Rectangular when two nearby tones
+ *   must be resolved.
+ *
+ * Relation between sidelobes and spectral leakage:
+ *   When a tone falls between two FFT bins its energy "leaks" into neighboring
+ *   bins with the pattern of the window's sidelobe structure.  High sidelobes
+ *   (rectangular) mask nearby weaker tones; low sidelobes (Blackman) keep
+ *   leakage below the noise floor for typical audio.
+ *
+ * @param {Float32Array} windowData - Window coefficients w[0 … N−1]
+ * @returns {Float32Array} magnitudeDb — N_fft/2+1 values, peak = 0 dB
+ */
+function computeWindowFFT(windowData) {
+  const N     = windowData.length;
+  // 8× zero-padding gives smooth sidelobe curves while remaining fast.
+  // The FFT size must be a power of 2 (fft.js requirement).
+  const N_fft = nextPow2(8 * N);
+
+  const fftInstance  = new FFT(N_fft);
+  // createComplexArray() returns a Float64Array pre-filled with zeros.
+  // Imaginary parts stay 0 for a real-valued input — no extra clearing needed.
+  const complexInput = fftInstance.createComplexArray();
+  const out          = fftInstance.createComplexArray();
+
+  // Copy window into the real part; zero-padding is already in place.
+  for (let n = 0; n < N; n++) {
+    complexInput[2 * n] = windowData[n];
+  }
+
+  fftInstance.transform(out, complexInput);
+
+  // Positive-frequency bins only: 0 (DC) … N_fft/2 (Nyquist)
+  const numBins = N_fft / 2 + 1;
+  const magDb   = new Float32Array(numBins);
+
+  for (let k = 0; k < numBins; k++) {
+    const re  = out[2 * k];
+    const im  = out[2 * k + 1];
+    const mag = Math.sqrt(re * re + im * im);
+    // 20·log10 for amplitude (voltage/pressure) spectrum.
+    // 1e-12 floor prevents log10(0) = −∞ on silence (numerically stable).
+    magDb[k] = 20 * Math.log10(mag + 1e-12);
+  }
+
+  // Normalize so the peak bin = 0 dB.
+  // This makes every window comparable on the same axes regardless of the
+  // absolute gain produced by different coefficient sums.
+  let maxDb = -Infinity;
+  for (let k = 0; k < numBins; k++) {
+    if (magDb[k] > maxDb) maxDb = magDb[k];
+  }
+  for (let k = 0; k < numBins; k++) {
+    magDb[k] -= maxDb;
+  }
+
+  return magDb;  // values ∈ (−∞, 0], peak = 0 dB
+}
+
+// =============================================================================
+// mapFrequencyAxis(numBins, N_fft) — normalized frequency per bin
+// =============================================================================
+/**
+ * Returns the normalized frequency (cycles/sample, 0 … 0.5) for each
+ * positive-frequency bin k of an N_fft-point FFT.
+ *
+ *   f[k] = k / N_fft    (0 = DC, 0.5 = Nyquist)
+ *
+ * Using normalized frequency (independent of fs) keeps the plot valid
+ * even before audio is loaded — a window's leakage character is a
+ * property of its shape, not the sample rate.
+ *
+ * @param {number} numBins - N_fft/2 + 1
+ * @param {number} N_fft
+ * @returns {Float32Array}
+ */
+function mapFrequencyAxis(numBins, N_fft) {
+  const freqs = new Float32Array(numBins);
+  for (let k = 0; k < numBins; k++) {
+    freqs[k] = k / N_fft;
+  }
+  return freqs;
+}
+
+// =============================================================================
+// niceFreqTicks(fMax) — nice tick values for an adaptive frequency axis
+// =============================================================================
+/**
+ * Returns ~4 round tick values covering [0, fMax] for the frequency axis.
+ * Uses the same 1-2-5 rounding strategy as niceTicks() on the main axes.
+ *
+ * @param {number} fMax - Maximum normalized frequency to display
+ * @returns {number[]}
+ */
+function niceFreqTicks(fMax) {
+  const roughStep = fMax / 4;  // target ~4 intervals → ~5 ticks
+  const mag       = Math.pow(10, Math.floor(Math.log10(roughStep)));
+  const norm      = roughStep / mag;
+  let step;
+  if      (norm < 1.5) step = 1 * mag;
+  else if (norm < 3.5) step = 2 * mag;
+  else                 step = 5 * mag;
+
+  const ticks = [0];
+  for (let t = step; t <= fMax + step * 1e-6; t += step) {
+    // Round to avoid floating-point drift (e.g. 0.02000000001)
+    ticks.push(Math.round(t / step) * step);
+  }
+  return ticks;
+}
+
+// =============================================================================
+// findSidelobePeaks(magDb, kMax, maxPeaks) — locate sidelobe local maxima
+// =============================================================================
+/**
+ * Finds the first `maxPeaks` sidelobe peaks in magDb[0 … kMax-1].
+ *
+ * Algorithm:
+ *   1. Skip the main lobe by descending from k=0 until the first local
+ *      minimum (first null of the window's frequency response).
+ *   2. Scan forward for subsequent local maxima — each is a sidelobe peak.
+ *
+ * Works reliably on the smooth 8× zero-padded response from computeWindowFFT()
+ * where each sidelobe creates a clear, well-separated local maximum.
+ *
+ * @param {Float32Array} magDb    - dB values from computeWindowFFT()
+ * @param {number}       kMax    - Scan only bins 0 … kMax-1
+ * @param {number}       maxPeaks - Maximum number of peaks to return
+ * @returns {{ k: number, db: number }[]}
+ */
+function findSidelobePeaks(magDb, kMax, maxPeaks) {
+  // Step 1: descend from the main-lobe peak (k=0) to the first null.
+  // The condition magDb[k+1] <= magDb[k] means "still descending or flat".
+  let k = 0;
+  while (k < kMax - 1 && magDb[k + 1] <= magDb[k]) k++;
+  // k is now at the first null; move one step into the sidelobe region.
+  k++;
+
+  const peaks = [];
+  while (k < kMax - 1 && peaks.length < maxPeaks) {
+    // Local maximum: strictly higher than left neighbour, ≥ right neighbour.
+    if (magDb[k] > magDb[k - 1] && magDb[k] >= magDb[k + 1]) {
+      peaks.push({ k, db: magDb[k] });
+      // Skip the descending edge of this sidelobe to land near the next null.
+      while (k < kMax - 1 && magDb[k] >= magDb[k + 1]) k++;
+    }
+    k++;
+  }
+  return peaks;
+}
+
+// =============================================================================
+// renderFrequencyResponse(cvs, dataList)
+// =============================================================================
+/**
+ * Draws the magnitude frequency response (in dB) for one or more windows.
+ *
+ * The X-axis is adaptively zoomed to show only the main lobe plus the first
+ * 2-3 sidelobes of the widest window (Blackman), keeping the plot readable
+ * and removing the cluttered flat region that extends to 0.5.
+ *
+ *   X-axis : Normalized Frequency (0 → f_max ≈ 12/N)
+ *   Y-axis : Magnitude (dB)       (0 dB top → −100 dB bottom)
+ *   Ticks  : Y = 0, −20, −40, −60, −80; X = nice ticks for [0, f_max]
+ *   Markers: colored dot + dB label at each annotated sidelobe peak
+ *   Legend : shown when dataList.length > 1
+ *
+ * Expected visual characteristics (confirms correct implementation):
+ *   Rectangular : narrow tall main lobe; high sidelobes (≈ −13 dB) that
+ *                 decay slowly — classic sinc² envelope.
+ *   Hann        : wider main lobe (≈4 bins); sidelobes at ≈ −32 dB, fast rolloff.
+ *   Hamming     : similar width to Hann; sidelobes plateau at ≈ −43 dB.
+ *   Blackman    : widest main lobe (≈6 bins); sidelobes below −74 dB.
+ *
+ * @param {HTMLCanvasElement} cvs
+ * @param {{ data: Float32Array, color: string, label: string }[]} dataList
+ */
+function renderFrequencyResponse(cvs, dataList) {
+  if (!dataList || dataList.length === 0) return;
+
+  // ── DPR-correct canvas sizing ─────────────────────────────────────────────
+  const dpr  = window.devicePixelRatio || 1;
+  const cssW = cvs.offsetWidth  || 300;
+  const cssH = cvs.offsetHeight || 160;
+  cvs.width  = Math.round(cssW * dpr);
+  cvs.height = Math.round(cssH * dpr);
+
+  const ctx = cvs.getContext("2d");
+  ctx.scale(dpr, dpr);
+
+  // ── Layout ────────────────────────────────────────────────────────────────
+  const PAD_L = 34;
+  const PAD_R = 10;
+  const PAD_T = 8;
+  const PAD_B = 28;
+  const plotW = cssW - PAD_L - PAD_R;
+  const plotH = cssH - PAD_T - PAD_B;
+
+  // ── dB axis range ─────────────────────────────────────────────────────────
+  const DB_MIN = -100;
+  const DB_MAX =    0;
+
+  // ── Adaptive frequency zoom ───────────────────────────────────────────────
+  // N_fft = 2*(numBins-1) from computeWindowFFT; N_orig = N_fft/8 (8× padding).
+  // Showing 0 to 12/N_orig (= 96/N_fft) normalized freq displays:
+  //   Blackman (main lobe 6 bins) : main lobe + ~2-3 sidelobes
+  //   Hann/Hamming (4 bins)       : main lobe + ~4 sidelobes
+  //   Rectangular (2 bins)        : main lobe + ~5 sidelobes
+  // This makes the leakage difference visible without showing the dull flat
+  // sidelobe tail that extends all the way to 0.5.
+  const numBins0 = dataList[0].data.length;
+  const N_fft0   = (numBins0 - 1) * 2;
+  const f_max    = Math.min(0.5, 96 / N_fft0);
+
+  // ── Coordinate helpers ────────────────────────────────────────────────────
+  const xPx = (f)  => PAD_L + (f / f_max) * plotW;
+  const yPx = (db) => PAD_T + ((DB_MAX - db) / (DB_MAX - DB_MIN)) * plotH;
+
+  // ── Background ────────────────────────────────────────────────────────────
+  ctx.fillStyle = "#0f1115";
+  ctx.fillRect(0, 0, cssW, cssH);
+
+  // ── Grid lines ────────────────────────────────────────────────────────────
+  const dbTicks = [0, -20, -40, -60, -80];
+  const fTicks  = niceFreqTicks(f_max);
+
+  ctx.strokeStyle = "#1e2128";
+  ctx.lineWidth   = 1;
+
+  for (const db of dbTicks) {
+    const y = yPx(db);
+    ctx.beginPath();
+    ctx.moveTo(PAD_L, y);
+    ctx.lineTo(PAD_L + plotW, y);
+    ctx.stroke();
+  }
+  for (const f of fTicks) {
+    const x = xPx(f);
+    ctx.beginPath();
+    ctx.moveTo(x, PAD_T);
+    ctx.lineTo(x, PAD_T + plotH);
+    ctx.stroke();
+  }
+
+  // ── Axis lines ────────────────────────────────────────────────────────────
+  ctx.strokeStyle = "#4a5060";
+  ctx.lineWidth   = 1;
+
+  ctx.beginPath();
+  ctx.moveTo(PAD_L, PAD_T);
+  ctx.lineTo(PAD_L, PAD_T + plotH);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(PAD_L,         PAD_T + plotH);
+  ctx.lineTo(PAD_L + plotW, PAD_T + plotH);
+  ctx.stroke();
+
+  // ── Tick marks and labels ─────────────────────────────────────────────────
+  ctx.font      = "10px Consolas, Menlo, monospace";
+  ctx.fillStyle = "#6a6f7a";
+  ctx.lineWidth = 1;
+
+  // Y-axis dB ticks
+  ctx.textAlign    = "right";
+  ctx.textBaseline = "middle";
+  for (const db of dbTicks) {
+    const y = yPx(db);
+    ctx.strokeStyle = "#4a5060";
+    ctx.beginPath();
+    ctx.moveTo(PAD_L - 4, y);
+    ctx.lineTo(PAD_L,     y);
+    ctx.stroke();
+    ctx.fillText(String(db), PAD_L - 6, y);
+  }
+
+  // X-axis ticks — determine decimal places from the tick step size
+  const fStep = fTicks.length > 1 ? (fTicks[1] - fTicks[0]) : f_max;
+  const fDec  = fStep < 0.001 ? 4 : fStep < 0.01 ? 3 : 2;
+
+  ctx.textAlign    = "center";
+  ctx.textBaseline = "top";
+  for (const f of fTicks) {
+    const x = xPx(f);
+    ctx.strokeStyle = "#4a5060";
+    ctx.beginPath();
+    ctx.moveTo(x, PAD_T + plotH);
+    ctx.lineTo(x, PAD_T + plotH + 4);
+    ctx.stroke();
+    ctx.fillText(f === 0 ? "0" : f.toFixed(fDec), x, PAD_T + plotH + 6);
+  }
+
+  // Axis titles
+  ctx.font         = "9px Consolas, Menlo, monospace";
+  ctx.fillStyle    = "#4a5060";
+  ctx.textAlign    = "center";
+  ctx.textBaseline = "top";
+  ctx.fillText("Normalized Frequency", PAD_L + plotW / 2, PAD_T + plotH + 17);
+
+  ctx.textAlign    = "center";
+  ctx.textBaseline = "bottom";
+  ctx.fillText("dB", PAD_L - 18, PAD_T + 2);
+
+  // ── Frequency response curves + sidelobe peak collection ─────────────────
+  // Clip to the plot area so curves stay within the axes.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(PAD_L, PAD_T, plotW, plotH);
+  ctx.clip();
+
+  // Single mode: annotate first 2 sidelobe peaks.
+  // Multi-window overlay: no annotations — four sets of labels would overlap
+  // and obscure the curves; the color legend already identifies each window.
+  const isSingle  = dataList.length === 1;
+  const peakLimit = isSingle ? 2 : 0;
+  const allPeaks  = [];  // { px, py, db, color }
+
+  for (const { data, color } of dataList) {
+    const numBins = data.length;
+    const N_fft   = (numBins - 1) * 2;
+    // Extend two bins past f_max so the curve's last point isn't cut short.
+    const kMax    = Math.min(numBins, Math.floor(f_max * N_fft) + 2);
+
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 1.5;
+    ctx.lineJoin    = "round";
+
+    for (let k = 0; k < kMax; k++) {
+      const f  = k / N_fft;
+      const db = Math.max(DB_MIN, data[k]);
+      const x  = xPx(f);
+      const y  = yPx(db);
+      if (k === 0) ctx.moveTo(x, y);
+      else         ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Collect sidelobe peaks for annotation.
+    const peaks = findSidelobePeaks(data, kMax, peakLimit);
+    for (const { k, db } of peaks) {
+      allPeaks.push({
+        px:    xPx(k / N_fft),
+        py:    yPx(Math.max(DB_MIN, db)),
+        db,
+        color,
+      });
+    }
+  }
+
+  // Sidelobe peak dots — drawn within the clip region.
+  for (const { px, py, color } of allPeaks) {
+    ctx.beginPath();
+    ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  ctx.restore();  // end clip
+
+  // ── Sidelobe peak labels ──────────────────────────────────────────────────
+  // Drawn outside the clip region so text is never cut off at the plot edges.
+  // Labels flip to the left when too close to the right margin.
+  ctx.font     = "8px Consolas, Menlo, monospace";
+  ctx.lineWidth = 1;
+  for (const { px, py, db, color } of allPeaks) {
+    const label  = Math.round(db) + " dB";
+    const flipL  = px + 38 > PAD_L + plotW;
+    ctx.textAlign    = flipL ? "right" : "left";
+    ctx.textBaseline = "bottom";
+    ctx.fillStyle    = color;
+    // Keep the label y within the plot area (avoid clipping at the top/bottom).
+    const labelY = Math.max(PAD_T + 8, Math.min(PAD_T + plotH, py - 3));
+    ctx.fillText(label, px + (flipL ? -4 : 4), labelY);
+  }
+
+  // ── Legend (multi-window) ─────────────────────────────────────────────────
+  if (dataList.length > 1) {
+    drawFreqLegend(ctx, dataList, PAD_L + plotW, PAD_T);
+  }
+}
+
+// =============================================================================
+// drawFreqLegend — compact in-canvas legend for the frequency-response plot
+// =============================================================================
+/**
+ * Same visual style as drawLegend() but takes `label` strings verbatim
+ * instead of looking them up in WIN_NAMES — works for any label.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {{ label: string, color: string }[]} dataList
+ * @param {number} rightX
+ * @param {number} topY
+ */
+function drawFreqLegend(ctx, dataList, rightX, topY) {
+  const LINE_LEN  = 14;
+  const ROW_H     = 14;
+  const PAD       = 4;
+  const FONT_SIZE = 10;
+
+  ctx.font = `${FONT_SIZE}px Consolas, Menlo, monospace`;
+
+  let maxNameW = 0;
+  for (const { label } of dataList) {
+    const w = ctx.measureText(label).width;
+    if (w > maxNameW) maxNameW = w;
+  }
+
+  const boxW = PAD + LINE_LEN + 4 + maxNameW + PAD;
+  const boxH = PAD + dataList.length * ROW_H + PAD;
+  const boxX = rightX - boxW - 2;
+  const boxY = topY + 2;
+
+  ctx.fillStyle = "rgba(15, 17, 21, 0.82)";
+  ctx.fillRect(boxX, boxY, boxW, boxH);
+
+  for (let i = 0; i < dataList.length; i++) {
+    const { label, color } = dataList[i];
+    const rowMidY = boxY + PAD + i * ROW_H + ROW_H / 2;
+
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 1.5;
+    ctx.moveTo(boxX + PAD,            rowMidY);
+    ctx.lineTo(boxX + PAD + LINE_LEN, rowMidY);
+    ctx.stroke();
+
+    ctx.fillStyle    = "#9aa0ad";
+    ctx.textAlign    = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, boxX + PAD + LINE_LEN + 4, rowMidY);
+  }
 }
 
 // =============================================================================
@@ -3055,6 +3530,17 @@ function renderWindowPanel() {
     ];
     renderWindowsOnCanvas(winVizCanvas, windowList, N);
 
+    // ── Frequency response: overlay all four on the same axes ────────────
+    // Side-by-side mode shows all windows on one plot — consistent with the
+    // time-domain overlay above.  The legend identifies each curve by name
+    // and color so the leakage of each window is directly comparable.
+    const freqDataList = windowList.map(({ type, color }) => ({
+      data:  computeWindowFFT(generateWindow(type, N)),
+      color,
+      label: { rectangular: "Rectangular", hann: "Hann", hamming: "Hamming", blackman: "Blackman" }[type],
+    }));
+    renderFrequencyResponse(winFreqCanvas, freqDataList);
+
   } else {
     // ── Single mode: one curve + KaTeX equation ───────────────────────────
     winEquationEl.classList.remove("hidden");
@@ -3064,6 +3550,17 @@ function renderWindowPanel() {
       N,
     );
     renderEquation(winType, winEquationEl);
+
+    // ── Frequency response: single window ────────────────────────────────
+    // Shows the spectral leakage character of the currently selected window.
+    // No legend needed for a single curve — the window name is already shown
+    // in the time-domain section and equation above.
+    const freqData = computeWindowFFT(generateWindow(winType, N));
+    renderFrequencyResponse(winFreqCanvas, [{
+      data:  freqData,
+      color: WIN_COLORS[winType] || "#5a8fff",
+      label: winType,
+    }]);
   }
 }
 

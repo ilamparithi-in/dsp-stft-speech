@@ -552,7 +552,9 @@ input[type="range"]:focus::-webkit-slider-thumb {
 #app.sidebar-collapsed .status-bar,
 #app.sidebar-collapsed .collapse-hint,
 #app.sidebar-collapsed #winVizCanvas,
-#app.sidebar-collapsed #winEquation {
+#app.sidebar-collapsed #winEquation,
+#app.sidebar-collapsed .win-freq-label,
+#app.sidebar-collapsed #winFreqCanvas {
   display: none;
 }
 
@@ -1252,6 +1254,30 @@ input[type="range"]:focus::-webkit-slider-thumb {
   border: 1px solid #2e3138;
   border-radius: 2px;
   /* pixelated keeps axis lines crisp at non-integer DPR scales */
+  image-rendering: pixelated;
+}
+
+/*
+ * Frequency-response canvas: slightly taller than the time-domain canvas to
+ * give the five dB tick labels (0, −20, −40, −60, −80) enough vertical room
+ * without crowding.  Same styling conventions as .win-canvas.
+ */
+.win-freq-label {
+  font-size: 10px;
+  color: #4a5060;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-top: 6px;
+  margin-bottom: 2px;
+}
+
+.win-freq-canvas {
+  display: block;
+  width: 100%;
+  height: 160px;
+  background: #0f1115;
+  border: 1px solid #2e3138;
+  border-radius: 2px;
   image-rendering: pixelated;
 }
 

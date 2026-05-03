@@ -232,6 +232,17 @@
         -->
         <div id="winEquation" class="win-equation"></div>
 
+        <!--
+          Frequency-domain canvas — shows the magnitude spectrum (in dB) of
+          each window function, making spectral leakage and main-lobe width
+          directly visible.  Single mode: one curve.  Side-by-side: all four
+          overlaid on the same axes (overlay comparison is more informative
+          than four stacked panels — the eye can read sidelobe levels at a
+          glance without mentally aligning separate axes).
+        -->
+        <div class="win-freq-label">Frequency Response</div>
+        <canvas id="winFreqCanvas" class="win-freq-canvas"></canvas>
+
       </div>
 
     </aside>
