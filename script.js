@@ -1215,7 +1215,8 @@ function renderSideBySide() {
 function updateSbsWidth() {
   if (!viewState || !sampleRate) return;
   const viewDuration = (viewState.frameEnd - viewState.frameStart) * CONFIG.hopSize / sampleRate;
-  const minW = (sbsPanelScrolls[0] && sbsPanelScrolls[0].clientWidth) || 100;
+  const activeScroll = getActiveSbsScroll();
+  const minW = (activeScroll && activeScroll.clientWidth) || 100;
   const w = Math.max(Math.round(viewDuration * CONFIG.pxPerSec), minW);
   // Each panel inner's width drives its scrollable content size
   sbsPanels.forEach((panel) => {
@@ -1223,13 +1224,15 @@ function updateSbsWidth() {
     if (inner) inner.style.width = w + "px";
   });
   sbsXAxisDiv.style.width = w + "px";  // match x-axis div width to content width
-  // X-axis: width matches the top-left panel's visible viewport.
-  // Y-axis: aligned to bottom-left panel (index 3) only — offset down by
-  // measuring the gap from the wrapper top to that panel's scroll area.
-  if (sbsPanelScrolls[0]) {
-    sbsXAxisWrapper.style.width = sbsPanelScrolls[0].clientWidth + "px";
+  // X-axis wrapper: matches the active panel's visible viewport.
+  // Y-axis: in normal mode align to the bottom-left panel (row 2, col 1);
+  //         in maximized mode align to the single visible panel.
+  if (activeScroll) {
+    sbsXAxisWrapper.style.width = activeScroll.clientWidth + "px";
   }
-  const bottomLeftScroll = sbsPanelScrolls[3] || sbsPanelScrolls[0];
+  const bottomLeftScroll = sbsMaximizedPanel
+    ? activeScroll
+    : (sbsPanelScrolls[3] || sbsPanelScrolls[0]);
   if (bottomLeftScroll) {
     const wrapperRect = sbsYAxisWrapper.getBoundingClientRect();
     const panelRect   = bottomLeftScroll.getBoundingClientRect();
@@ -1348,9 +1351,10 @@ function renderSbsColorbar() {
 // SBS Custom Scrollbar — mirrors single-mode scrollbar logic
 // =============================================================================
 function updateSbsScrollbar() {
-  if (!sbsPanelScrolls[0]) return;
-  const scrollW = sbsPanelScrolls[0].scrollWidth;
-  const clientW = sbsPanelScrolls[0].clientWidth;
+  const activeScroll = getActiveSbsScroll();
+  if (!activeScroll) return;
+  const scrollW = activeScroll.scrollWidth;
+  const clientW = activeScroll.clientWidth;
   const trackW  = sbsCustomScrollbar.clientWidth;
   if (trackW === 0) return;
 
@@ -1362,7 +1366,7 @@ function updateSbsScrollbar() {
 
   const thumbW      = Math.max(24, Math.round((clientW / scrollW) * trackW));
   const thumbRange  = trackW - thumbW;
-  const scrollFrac  = sbsPanelScrolls[0].scrollLeft / (scrollW - clientW);
+  const scrollFrac  = activeScroll.scrollLeft / (scrollW - clientW);
   sbsCustomThumb.style.width = thumbW + "px";
   sbsCustomThumb.style.left  = Math.round(scrollFrac * thumbRange) + "px";
 }
@@ -1392,7 +1396,8 @@ function onSbsThumbDragStart(e) {
   sbsThumbDragging = true;
   const src = (e.touches && e.touches.length > 0) ? e.touches[0] : e;
   sbsThumbDragStartX          = src.clientX;
-  sbsThumbDragStartScrollLeft = sbsPanelScrolls[0] ? sbsPanelScrolls[0].scrollLeft : 0;
+  const _aps = getActiveSbsScroll();
+  sbsThumbDragStartScrollLeft = _aps ? _aps.scrollLeft : 0;
   sbsCustomThumb.classList.add("active");
   document.addEventListener("mousemove", onSbsThumbDragMove);
   document.addEventListener("mouseup",   onSbsThumbDragEnd);
@@ -1411,7 +1416,7 @@ function onSbsThumbDragMove(e) {
   const thumbW     = sbsCustomThumb.offsetWidth;
   const thumbRange = trackW - thumbW;
   if (thumbRange <= 0) return;
-  const ps0 = sbsPanelScrolls[0];
+  const ps0 = getActiveSbsScroll();
   if (!ps0) return;
   const scrollRange = ps0.scrollWidth - ps0.clientWidth;
   const scrollDelta = dx * (scrollRange / thumbRange);
@@ -1435,11 +1440,78 @@ sbsCustomScrollbar.addEventListener("click", (e) => {
   const rect      = sbsCustomScrollbar.getBoundingClientRect();
   const clickX    = e.clientX - rect.left;
   const thumbLeft = parseFloat(sbsCustomThumb.style.left) || 0;
-  const ps0       = sbsPanelScrolls[0];
+  const ps0       = getActiveSbsScroll();
   if (!ps0) return;
   const pageW     = ps0.clientWidth;
   syncSbsScroll(ps0.scrollLeft + (clickX < thumbLeft ? -pageW : pageW));
 });
+
+// =============================================================================
+// SBS Maximize — expand a single panel to fill the full grid
+// =============================================================================
+
+/** The panel currently maximized, or null (grid view). */
+let sbsMaximizedPanel = null;
+
+/**
+ * Returns the scroll container that represents the "active" (visible) panel.
+ * In maximized mode returns that panel's scroll; otherwise sbsPanelScrolls[0].
+ * All scrollbar/width logic uses this so it works correctly in both states.
+ */
+function getActiveSbsScroll() {
+  if (sbsMaximizedPanel) {
+    return sbsMaximizedPanel.querySelector(".sbs-panel-scroll");
+  }
+  return sbsPanelScrolls[0];
+}
+
+/**
+ * Toggle maximize / restore for an SBS panel.
+ * When maximized the panel fills the full grid; the shared axes and scrollbar
+ * remain fully functional.  Zoom and cursor continue to operate unchanged
+ * because all canvases stay in the DOM — hidden ones have clientWidth=0 so
+ * drawCursorOnCanvas() returns early without drawing on them.
+ */
+function sbsToggleMaximize(panel) {
+  const btn = panel.querySelector(".sbs-maximize-btn");
+
+  if (sbsMaximizedPanel === panel) {
+    // ── Restore ──────────────────────────────────────────────────────────
+    panel.classList.remove("maximized");
+    sbsContainer.classList.remove("has-maximized");
+    sbsMaximizedPanel = null;
+    btn.textContent = "\u26F6";   // ⛶ maximize icon
+    btn.title       = "Maximize";
+  } else {
+    // ── Maximize ─────────────────────────────────────────────────────────
+    // Restore any previously maximized panel first
+    if (sbsMaximizedPanel) {
+      const prevBtn = sbsMaximizedPanel.querySelector(".sbs-maximize-btn");
+      sbsMaximizedPanel.classList.remove("maximized");
+      prevBtn.textContent = "\u26F6";
+      prevBtn.title       = "Maximize";
+    }
+    panel.classList.add("maximized");
+    sbsContainer.classList.add("has-maximized");
+    sbsMaximizedPanel = panel;
+    btn.textContent = "\u229F";   // ⊟ restore icon
+    btn.title       = "Restore";
+  }
+
+  // Recompute layout for the new panel visibility after the CSS class is applied.
+  requestAnimationFrame(() => {
+    updateSbsWidth();
+    if (viewState && sampleRate) {
+      const { frameStart, frameEnd, binStart, binEnd } = viewState;
+      const fs         = sampleRate;
+      const tViewStart = CONFIG.startTime + frameStart * CONFIG.hopSize / fs;
+      const tViewEnd   = CONFIG.startTime + frameEnd   * CONFIG.hopSize / fs;
+      const fMin       = binStart * fs / CONFIG.frameSize;
+      const fMax       = (binEnd - 1) * fs / CONFIG.frameSize;
+      renderSbsAxes(tViewStart, tViewEnd, fMin, fMax);
+    }
+  });
+}
 
 // =============================================================================
 // SBS Zoom — synchronized zoom across all 4 panels
@@ -1481,6 +1553,8 @@ sbsPanels.forEach((panel) => {
   addDoubleTap(zc, resetSbsZoom);
   // Reset button inside each panel
   panel.querySelector(".sbs-reset-btn").addEventListener("click", resetSbsZoom);
+  // Maximize button in the panel title
+  panel.querySelector(".sbs-maximize-btn").addEventListener("click", () => sbsToggleMaximize(panel));
 });
 
 function syncSbsZoomCanvas(zc) {
@@ -2085,15 +2159,15 @@ function autoScrollToElapsed(elapsed) {
     const tViewStart = CONFIG.startTime + viewState.frameStart * CONFIG.hopSize / sampleRate;
     const tViewEnd   = CONFIG.startTime + viewState.frameEnd   * CONFIG.hopSize / sampleRate;
     if (elapsed < tViewStart || elapsed > tViewEnd) return;
-    const firstInner = sbsPanelsRow.querySelector(".sbs-panel-inner");
-    if (!firstInner) return;
-    const innerW  = firstInner.clientWidth;
+    const activeScroll  = getActiveSbsScroll();
+    if (!activeScroll) return;
+    const activeInner = (sbsMaximizedPanel || sbsPanels[0]).querySelector(".sbs-panel-inner");
+    if (!activeInner) return;
+    const innerW  = activeInner.clientWidth;
     const x       = ((elapsed - tViewStart) / (tViewEnd - tViewStart)) * innerW;
-    const ps0     = sbsPanelScrolls[0];
-    if (!ps0) return;
-    const pageW   = ps0.clientWidth;
-    if (x > ps0.scrollLeft + pageW) {
-      syncSbsScroll(ps0.scrollLeft + pageW);
+    const pageW   = activeScroll.clientWidth;
+    if (x > activeScroll.scrollLeft + pageW) {
+      syncSbsScroll(activeScroll.scrollLeft + pageW);
     }
   } else {
     if (!viewState || !fullDbMatrix) return;

@@ -972,6 +972,8 @@ input[type="range"]:focus::-webkit-slider-thumb {
 
 .sbs-panel-title {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
   font-size: 10px;
   color: #6a6f7a;
   letter-spacing: 0.08em;
@@ -980,6 +982,22 @@ input[type="range"]:focus::-webkit-slider-thumb {
   background: #1a1d23;
   border-bottom: 1px solid #2e3138;
 }
+
+.sbs-maximize-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: #6a6f7a;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  line-height: 1;
+  font-style: normal;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.sbs-maximize-btn:hover { color: #5a8fff; }
 
 /* Per-panel horizontal scroll container — synced via JS */
 .sbs-panel-scroll {
@@ -1046,6 +1064,15 @@ input[type="range"]:focus::-webkit-slider-thumb {
   position: relative;
   height: 36px;
   overflow: hidden;  /* clip labels that would extend beyond the content boundary */
+}
+
+/* Maximized-panel state: hide all other panels, stretch the maximized one */
+#sbsContainer.has-maximized .sbs-panel:not(.maximized) {
+  display: none;
+}
+#sbsContainer.has-maximized .sbs-panel.maximized {
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
 }
 
 /* Per-panel zoom reset button */
