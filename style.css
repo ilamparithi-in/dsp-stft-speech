@@ -1573,6 +1573,15 @@ input[type="range"]:focus::-webkit-slider-thumb {
   color: #c8cdd6;
 }
 
+.info-modal-body a {
+  color: #7ab4f5;
+  text-decoration: none;
+}
+
+.info-modal-body a:hover {
+  text-decoration: underline;
+}
+
 .info-section {
   display: flex;
   flex-direction: column;

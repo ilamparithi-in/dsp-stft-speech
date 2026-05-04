@@ -505,6 +505,54 @@
         </section>
 
         <section class="info-section">
+          <h2 class="info-h2">Input field limits</h2>
+          <table class="info-table">
+            <thead>
+              <tr><th>Field</th><th>Constraint</th><th>Notes</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>Sample Rate (Hz)</code></td>
+                <td>3 000 – 768 000 Hz</td>
+                <td>Enforced by the Web Audio API's <code>OfflineAudioContext</code>. Values
+                    outside this range cause a browser error during resampling.</td>
+              </tr>
+              <tr>
+                <td><code>Frame Size</code></td>
+                <td>Positive power of 2</td>
+                <td>Required by the FFT algorithm (fft.js). Use 128, 256, 512, 1024, etc.
+                    Non-powers-of-2 are rejected with an error message.</td>
+              </tr>
+              <tr>
+                <td><code>Hop Size</code></td>
+                <td>Positive integer ≥ 1</td>
+                <td>Must be less than or equal to Frame Size to avoid skipping samples.
+                    No upper bound is enforced, but values larger than Frame Size waste
+                    data.</td>
+              </tr>
+              <tr>
+                <td><code>Start Time (s)</code></td>
+                <td>0 ≤ start &lt; audio duration</td>
+                <td>Must be within the loaded audio. Values outside this range are
+                    rejected with an error.</td>
+              </tr>
+              <tr>
+                <td><code>Segment Duration (s)</code></td>
+                <td>&gt; 0 s, ≤ remaining audio</td>
+                <td>If the value exceeds the audio remaining from Start Time, it is
+                    silently clamped to the available length and the field is updated.</td>
+              </tr>
+              <tr>
+                <td><code>Time Scale (px/s)</code></td>
+                <td>10 – 1 500 px/s</td>
+                <td>Controlled by a range slider; bounds are enforced by the
+                    <code>&lt;input type="range"&gt;</code> element itself.</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="info-section">
           <h2 class="info-h2">Spectrogram display</h2>
           <ul class="info-ul">
             <li><strong>X-axis</strong> — time in seconds from the chosen Start Time.</li>
@@ -579,6 +627,26 @@
             give the spectrogram more horizontal space. Click any icon to expand a specific
             section, or press <kbd>&#xBB;</kbd> to fully restore the sidebar.
           </p>
+        </section>
+
+        <section class="info-section">
+          <h2 class="info-h2">License &amp; attribution</h2>
+          <p>
+            This project is released under the
+            <a href="https://github.com/ilamparithi-m/dsp-stft-speech/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+            &mdash; Copyright &copy; 2026 Ilamparithi Murali.
+          </p>
+          <p>It uses the following open-source libraries:</p>
+          <ul class="info-ul">
+            <li>
+              <a href="https://github.com/indutny/fft.js" target="_blank" rel="noopener">fft.js</a>
+              v4.0.4 &mdash; Fedor Indutny &mdash; MIT License
+            </li>
+            <li>
+              <a href="https://katex.org" target="_blank" rel="noopener">KaTeX</a>
+              &mdash; Khan Academy &mdash; MIT License
+            </li>
+          </ul>
         </section>
 
       </div><!-- /.info-modal-body -->
