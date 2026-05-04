@@ -74,6 +74,11 @@ const stopRecBtn   = document.getElementById("stopRecBtn");
 const saveRecBtn   = document.getElementById("saveRecBtn");
 const recStatus    = document.getElementById("recStatus");
 const recTimer     = document.getElementById("recTimer");
+// Collapsed sidebar icon buttons
+const iconBtnFile   = document.getElementById("iconBtnFile");
+const iconBtnRecord = document.getElementById("iconBtnRecord");
+const iconBtnRun    = document.getElementById("iconBtnRun");
+const iconBtnPlay   = document.getElementById("iconBtnPlay");
 // Comparison mode controls
 const comparisonModeSelect  = document.getElementById("comparisonMode");
 // Side-by-side container and its sub-elements
@@ -205,12 +210,29 @@ gridResizeObserver.observe(sbsContainer);
 document.querySelectorAll(".section-icon-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     const action = btn.dataset.action;
-    if (action === "run") {
+    if (action === "file") {
+      // Open the file picker directly — no sidebar expansion needed.
+      audioInput.click();
+    } else if (action === "record") {
+      // Toggle recording: start if idle, stop (and auto-compute) if active.
+      if (mediaRecorder && mediaRecorder.state === "recording") {
+        stopRecording();
+      } else {
+        startRecording();
+      }
+    } else if (action === "run") {
       if (!processBtn.disabled) { processBtn.click(); }
       else { expandSidebar(); }
     } else if (action === "play") {
       if (!playBtn.disabled) { playBtn.click(); }
       else { expandSidebar(); }
+    } else if (action === "window") {
+      // Expand sidebar then scroll the window-function section into view.
+      expandSidebar();
+      setTimeout(() => {
+        const section = document.getElementById("windowVizSection");
+        if (section) section.scrollIntoView({ behavior: "smooth" });
+      }, 60);
     } else {
       expandSidebar();
     }
@@ -283,6 +305,9 @@ audioInput.addEventListener("change", () => {
   clearCanvas();
   spectroGrid.classList.add("hidden");
   placeholder.classList.remove("hidden");
+  // Signal that the file is ready to process
+  processBtn.classList.add("blinking");
+  if (iconBtnRun) iconBtnRun.classList.add("blinking");
 });
 
 processBtn.addEventListener("click", async () => {
@@ -296,6 +321,10 @@ processBtn.addEventListener("click", async () => {
   // are caught and reported by the computation layer (prepareSegment /
   // computeSTFT), keeping all validation logic in one place.
   readConfigFromUI();
+
+  // Clear the "file ready" blink as soon as the user commits to running.
+  processBtn.classList.remove("blinking");
+  if (iconBtnRun) iconBtnRun.classList.remove("blinking");
 
   processBtn.disabled = true;
 
@@ -1971,12 +2000,14 @@ function startPlayback() {
   playStartTime = audioCtx.currentTime;
   isPlaying     = true;
   playBtn.textContent = "\u23F9 Stop";
+  if (iconBtnPlay) iconBtnPlay.textContent = "\u23F9";  // ⏹
 
   // onended fires when the buffer plays out naturally (not when stop() is called)
   sourceNode.onended = () => {
     isPlaying = false;
     sourceNode = null;
     playBtn.textContent = "\u25B6 Play";
+    if (iconBtnPlay) iconBtnPlay.textContent = "\u25B6";  // ▶
     // Draw cursor at the very end position so it doesn't snap back to 0.
     // getNormalizedTime() clamps to 1.0 at this point, placing the cursor at
     // the right edge of every active spectrogram canvas.
@@ -2015,6 +2046,7 @@ function stopPlayback(clearCursor) {
 
   if (clearCursor) clearAllCursors();
   playBtn.textContent = "\u25B6 Play";
+  if (iconBtnPlay) iconBtnPlay.textContent = "\u25B6";  // ▶
 }
 
 /**
@@ -2267,6 +2299,7 @@ function setRecordingState(state) {
       startRecBtn.disabled = false;
       stopRecBtn.disabled  = true;
       startRecBtn.classList.remove("recording");
+      if (iconBtnRecord) iconBtnRecord.classList.remove("recording");
       recStatus.textContent = "Idle";
       recStatus.className   = "rec-status";
       recTimer.classList.add("hidden");
@@ -2277,6 +2310,7 @@ function setRecordingState(state) {
       startRecBtn.disabled = true;
       stopRecBtn.disabled  = false;
       startRecBtn.classList.add("recording");
+      if (iconBtnRecord) iconBtnRecord.classList.add("recording");
       recStatus.textContent = "Recording\u2026";
       recStatus.className   = "rec-status active";
       recTimer.classList.remove("hidden");
@@ -2286,6 +2320,7 @@ function setRecordingState(state) {
       startRecBtn.disabled = true;
       stopRecBtn.disabled  = true;
       startRecBtn.classList.remove("recording");
+      if (iconBtnRecord) iconBtnRecord.classList.remove("recording");
       recStatus.textContent = "Processing\u2026";
       recStatus.className   = "rec-status processing";
       recTimer.classList.add("hidden");
@@ -2496,8 +2531,10 @@ async function processRecordedAudio(blob) {
     recPCM           = monoSamples.slice();
     recPCMSampleRate = sampleRate;
 
-    // ── f. Set CONFIG for a fresh recording: reset start to 0 but honour
-    //       the user's segmentDuration input for partial processing.
+    // ── f. Set CONFIG for a fresh recording: reset start to 0 and set
+    //       duration to the full recording length so nothing is clipped.
+    const fullDurSec = monoSamples.length / sampleRate;
+    segDurationInput.value = fullDurSec.toFixed(3);
     readConfigFromUI();
     CONFIG.startTime = 0;
 
@@ -3577,21 +3614,62 @@ frameSizeInput.addEventListener("change", renderWindowPanel);
 windowSelect.addEventListener("change",   renderWindowPanel);
 comparisonModeSelect.addEventListener("change", renderWindowPanel);
 
-// ── Time-scale slider — real-time spectrogram rescale ────────────────────────
-// Updates CONFIG.pxPerSec and the readout label on every slider movement.
-// Re-renders the spectrogram immediately if data is available so the user
-// can see the effect without pressing Run again.
-timeScaleInput.addEventListener("input", () => {
-  const pps = Math.max(10, parseInt(timeScaleInput.value, 10) || 150);
-  CONFIG.pxPerSec = pps;
-  timeScaleValue.textContent = pps;
+// ── Time-scale slider + click-to-edit readout ────────────────────────────────
+// Slider: clamps to [10, 1500], updates readout span, re-renders live.
+// Readout: clicking opens an inline <input type="number"> that accepts any
+//   value ≥ 10 (no upper cap).  Committing (Enter / blur) applies the value.
+//   If the slider is moved while the input is open it closes it first.
 
+function applyPxPerSec(pps) {
+  CONFIG.pxPerSec = pps;
   const mode = comparisonModeSelect.value;
   if (mode === "sidebyside" && fullDbMatrices) {
     renderSideBySide();
   } else if (fullDbMatrix) {
     renderCurrentView();
   }
+}
+
+timeScaleInput.addEventListener("input", () => {
+  // Slider always stays within its declared range [10, 1500].
+  const pps = Math.max(10, parseInt(timeScaleInput.value, 10) || 150);
+  CONFIG.pxPerSec = pps;
+  timeScaleValue.textContent = pps;
+  // If an inline edit input is currently open, close it without committing.
+  const existing = timeScaleValue.parentElement.querySelector(".slider-readout-input");
+  if (existing) existing.replaceWith(timeScaleValue);
+  applyPxPerSec(pps);
+});
+
+timeScaleValue.addEventListener("click", () => {
+  const inp = document.createElement("input");
+  inp.type = "number";
+  inp.min  = "10";
+  inp.className = "slider-readout-input";
+  inp.value = CONFIG.pxPerSec;
+  // Select all text on focus so the user can type immediately.
+  inp.addEventListener("focus", () => inp.select());
+
+  function commit() {
+    const pps = Math.max(10, parseInt(inp.value, 10) || CONFIG.pxPerSec);
+    // Sync slider only if the value is within its range; otherwise leave it
+    // where it is so the slider doesn't jump to a misleading position.
+    if (pps >= 10 && pps <= 1500) {
+      timeScaleInput.value = pps;
+    }
+    timeScaleValue.textContent = pps;
+    inp.replaceWith(timeScaleValue);
+    applyPxPerSec(pps);
+  }
+
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter")  { e.preventDefault(); commit(); }
+    if (e.key === "Escape") { inp.replaceWith(timeScaleValue); }
+  });
+  inp.addEventListener("blur", commit);
+
+  timeScaleValue.replaceWith(inp);
+  inp.focus();
 });
 
 // ── Initial render ────────────────────────────────────────────────────────────

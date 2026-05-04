@@ -321,6 +321,26 @@ input[type="number"]:focus {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   flex-shrink: 0;
+  cursor: text;
+  border-bottom: 1px dashed #3a3f4a;
+}
+.slider-readout:hover {
+  border-bottom-color: #5a8fff;
+}
+/* Inline number input that replaces the readout on click */
+.slider-readout-input {
+  font-family: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #5a8fff;
+  background: #252830;
+  border: 1px solid #5a8fff;
+  border-radius: 2px;
+  padding: 0 3px;
+  width: 5ch;
+  outline: none;
+  text-align: right;
+  flex-shrink: 0;
 }
 
 input[type="range"] {
@@ -561,6 +581,11 @@ input[type="range"]:focus::-webkit-slider-thumb {
 /* Show the icon buttons */
 #app.sidebar-collapsed .section-icon-btn {
   display: block;
+}
+
+/* Hide buttons explicitly marked as not needed in collapsed mode */
+#app.sidebar-collapsed .section-icon-btn[data-collapsed-hidden] {
+  display: none;
 }
 
 /* Sidebar title when collapsed — desktop: center the lone button */
@@ -1413,6 +1438,26 @@ input[type="range"]:focus::-webkit-slider-thumb {
   animation: rec-pulse 1s ease-in-out infinite;
   color: #ff2222;
   border-color: #882222;
+}
+
+/* Pulsing red for the collapsed record icon when recording */
+.section-icon-btn.recording {
+  animation: rec-pulse 1s ease-in-out infinite;
+  color: #ff2222 !important;
+}
+
+/* Pulsing blue for the collapsed run icon (and expanded processBtn) when a file is ready */
+@keyframes run-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+.section-icon-btn.blinking {
+  animation: run-pulse 0.9s ease-in-out infinite;
+  color: #5a8fff !important;
+}
+#processBtn.blinking {
+  animation: run-pulse 0.9s ease-in-out infinite;
+  box-shadow: 0 0 0 2px #2a5bbf;
 }
 
 /* Save recording button */

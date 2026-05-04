@@ -63,7 +63,7 @@
       </div>
 
       <div class="sidebar-section">
-        <button class="section-icon-btn" data-action="expand" title="Input file">&#8853;</button>
+        <button class="section-icon-btn" data-action="file" id="iconBtnFile" title="Open file">&#8853;</button>
         <div class="section-label">INPUT</div>
 
         <!-- File selector: plain text label + native file input -->
@@ -80,7 +80,7 @@
 
       <!-- ── Microphone recording ── -->
       <div class="sidebar-section">
-        <button class="section-icon-btn" data-action="expand" title="Microphone recording">&#9679;</button>
+        <button class="section-icon-btn" data-action="record" id="iconBtnRecord" title="Record">&#9679;</button>
         <div class="section-label">RECORD</div>
 
         <div class="field">
@@ -99,7 +99,7 @@
       </div>
 
       <div class="sidebar-section">
-        <button class="section-icon-btn" data-action="expand" title="Parameters">&#8801;</button>
+        <button class="section-icon-btn" data-action="expand" data-collapsed-hidden="true" title="Parameters">&#8801;</button>
         <div class="section-label">PARAMETERS</div>
 
         <!-- Each parameter follows the same label-above-input grid pattern -->
@@ -157,7 +157,7 @@
 
       <!-- Audio metadata — populated after Run decodes the file -->
       <div class="sidebar-section">
-        <button class="section-icon-btn" data-action="expand" title="Audio info">&#8505;</button>
+        <button class="section-icon-btn" data-action="expand" data-collapsed-hidden="true" title="Audio info">&#8505;</button>
         <div class="section-label">AUDIO INFO</div>
         <div class="field">
           <span class="field-label">Duration (s)</span>
@@ -184,13 +184,13 @@
 
       <!-- Run button — full width of sidebar, styled as a functional control -->
       <div class="sidebar-section">
-        <button class="section-icon-btn" data-action="run" title="Run STFT">&#9654;</button>
+        <button class="section-icon-btn" data-action="run" id="iconBtnRun" title="Run STFT">&#9881;</button>
         <button id="processBtn" disabled>&#9654; Run</button>
       </div>
 
       <!-- Playback controls — enabled after spectrogram is rendered -->
       <div class="sidebar-section">
-        <button class="section-icon-btn" data-action="play" title="Play / Stop">&#9835;</button>
+        <button class="section-icon-btn" data-action="play" id="iconBtnPlay" title="Play / Stop">&#9654;</button>
         <div class="section-label">PLAYBACK</div>
         <button id="playBtn" disabled>&#9654; Play</button>
       </div>
@@ -217,7 +217,7 @@
         Canvas intrinsic size is set by JS; CSS controls the layout height.
       -->
       <div class="sidebar-section" id="windowVizSection">
-        <button class="section-icon-btn" data-action="expand" title="Window function">&#9636;</button>
+        <button class="section-icon-btn" data-action="window" title="Window function">&#9636;</button>
         <div class="section-label">WINDOW FUNCTION</div>
 
         <!--
