@@ -390,8 +390,8 @@ async function runPipelineFromSamples() {
   const mode = comparisonModeSelect.value;
 
   if (mode === "sidebyside") {
-    // ── Side-by-side: compute STFT for all four window types ──────────────
-    const windowTypes = ["rectangular", "hann", "hamming", "blackman"];
+    // ── Side-by-side: compute STFT for all five window types ──────────────
+    const windowTypes = ["rectangular", "hann", "hamming", "blackman", "bartlett"];
     fullDbMatrices = {};
     for (const wt of windowTypes) {
       const pm = computeSTFT(segment, { ...CONFIG, windowType: wt });
@@ -728,6 +728,12 @@ function buildWindow(type, N) {
         w[n] = 0.42
              - 0.5  * Math.cos(TWO_PI * n / (N - 1))
              + 0.08 * Math.cos(4 * Math.PI * n / (N - 1));
+        break;
+
+      case "bartlett":
+        // Bartlett (triangular): linear taper to zero at both ends.
+        // Moderate sidelobe rejection (≈ −27 dB); smoother than rectangular.
+        w[n] = 1 - Math.abs(2 * n / (N - 1) - 1);
         break;
 
       case "rectangular":
@@ -1132,10 +1138,10 @@ function formatTime(t) {
 }
 
 // =============================================================================
-// renderSideBySide — render all 4 window panels with shared viewState
+// renderSideBySide — render all 5 window panels with shared viewState
 // =============================================================================
 /**
- * Renders each of the 4 side-by-side spectrogram panels using the shared
+ * Renders each of the 5 side-by-side spectrogram panels using the shared
  * viewState.  Called after Run in sbs mode and after any synchronized zoom.
  */
 function renderSideBySide() {
@@ -1144,7 +1150,7 @@ function renderSideBySide() {
   updateSbsWidth();
 
   const { frameStart, frameEnd, binStart, binEnd } = viewState;
-  const windowTypes = ["rectangular", "hann", "hamming", "blackman"];
+  const windowTypes = ["rectangular", "hann", "hamming", "blackman", "bartlett"];
 
   sbsPanels.forEach((panel) => {
     const wt = panel.dataset.window;
@@ -1189,12 +1195,12 @@ function updateSbsWidth() {
   });
   sbsXAxisDiv.style.width = w + "px";  // match x-axis div width to content width
   // X-axis: width matches the top-left panel's visible viewport.
-  // Y-axis: aligned to bottom-left panel (index 2) only — offset down by
+  // Y-axis: aligned to bottom-left panel (index 3) only — offset down by
   // measuring the gap from the wrapper top to that panel's scroll area.
   if (sbsPanelScrolls[0]) {
     sbsXAxisWrapper.style.width = sbsPanelScrolls[0].clientWidth + "px";
   }
-  const bottomLeftScroll = sbsPanelScrolls[2] || sbsPanelScrolls[0];
+  const bottomLeftScroll = sbsPanelScrolls[3] || sbsPanelScrolls[0];
   if (bottomLeftScroll) {
     const wrapperRect = sbsYAxisWrapper.getBoundingClientRect();
     const panelRect   = bottomLeftScroll.getBoundingClientRect();
@@ -2642,6 +2648,7 @@ const WIN_COLORS = {
   hann:        "#4dd8a0",  // teal-green
   hamming:     "#f0c040",  // amber
   blackman:    "#e05252",  // red
+  bartlett:    "#c97fff",  // violet
 };
 
 // ── KaTeX LaTeX strings ───────────────────────────────────────────────────────
@@ -2659,6 +2666,7 @@ const WIN_EQUATIONS = {
   hamming:     "w[n] = 0.54 - 0.46\\cos\\!\\left(\\dfrac{2\\pi n}{N-1}\\right)",
   blackman:    "w[n] = 0.42 - 0.5\\cos\\!\\left(\\dfrac{2\\pi n}{N-1}\\right)" +
                " + 0.08\\cos\\!\\left(\\dfrac{4\\pi n}{N-1}\\right)",
+  bartlett:    "w[n] = 1 - \\left|\\dfrac{2n}{N-1} - 1\\right|",
 };
 
 // =============================================================================
@@ -2715,6 +2723,12 @@ function generateWindow(type, N) {
         w[n] = 0.42
              - 0.5  * Math.cos(TWO_PI * n / NM1)
              + 0.08 * Math.cos(4 * Math.PI * n / NM1);
+        break;
+
+      case "bartlett":
+        // Bartlett (triangular): linear taper to zero at both ends.
+        // Moderate sidelobe rejection (≈ −27 dB); smoother than rectangular.
+        w[n] = 1 - Math.abs(2 * n / NM1 - 1);
         break;
 
       case "rectangular":
@@ -3516,17 +3530,18 @@ function renderWindowPanel() {
       { type: "hann",        color: WIN_COLORS.hann        },
       { type: "hamming",     color: WIN_COLORS.hamming     },
       { type: "blackman",    color: WIN_COLORS.blackman    },
+      { type: "bartlett",    color: WIN_COLORS.bartlett    },
     ];
     renderWindowsOnCanvas(winVizCanvas, windowList, N);
 
-    // ── Frequency response: overlay all four on the same axes ────────────
+    // ── Frequency response: overlay all five on the same axes ────────────
     // Side-by-side mode shows all windows on one plot — consistent with the
     // time-domain overlay above.  The legend identifies each curve by name
     // and color so the leakage of each window is directly comparable.
     const freqDataList = windowList.map(({ type, color }) => ({
       data:  computeWindowFFT(generateWindow(type, N)),
       color,
-      label: { rectangular: "Rectangular", hann: "Hann", hamming: "Hamming", blackman: "Blackman" }[type],
+      label: { rectangular: "Rectangular", hann: "Hann", hamming: "Hamming", blackman: "Blackman", bartlett: "Bartlett" }[type],
     }));
     renderFrequencyResponse(winFreqCanvas, freqDataList);
 

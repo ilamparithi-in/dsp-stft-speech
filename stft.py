@@ -21,6 +21,11 @@ def blackman_window(frame_size):
 	return 0.42 - 0.5 * np.cos(2 * np.pi * n / (frame_size - 1)) + 0.08 * np.cos(4 * np.pi * n / (frame_size - 1))
 
 
+def bartlett_window(frame_size):
+	n = np.arange(frame_size)
+	return 1 - np.abs(2 * n / (frame_size - 1) - 1)
+
+
 def get_window(window_type, frame_size):
 	if window_type == "rectangular":
 		return rectangular_window(frame_size)
@@ -30,7 +35,9 @@ def get_window(window_type, frame_size):
 		return hamming_window(frame_size)
 	if window_type == "blackman":
 		return blackman_window(frame_size)
-	raise ValueError("window_type must be one of: rectangular, hann, hamming, blackman")
+	if window_type == "bartlett":
+		return bartlett_window(frame_size)
+	raise ValueError("window_type must be one of: rectangular, hann, hamming, blackman, bartlett")
 
 
 def stft(x, fs, window_type, frame_size, hop_size, n_fft=None):

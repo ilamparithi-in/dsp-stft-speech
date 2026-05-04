@@ -924,11 +924,11 @@ input[type="range"]:focus::-webkit-slider-thumb {
   min-height: 0;
 }
 
-/* 2-column grid of panels (fills the scroll area) */
+/* 3-column grid of panels (fills the scroll area) */
 #sbsPanelsRow {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   grid-template-rows: 1fr 1fr;
   gap: 3px;
   min-width: 0;

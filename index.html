@@ -129,6 +129,7 @@
             <option value="hann">Hann</option>
             <option value="hamming" selected>Hamming</option>
             <option value="blackman">Blackman</option>
+            <option value="bartlett">Bartlett</option>
           </select>
         </div>
 
@@ -327,7 +328,7 @@
                  Visible only on mobile via CSS. On desktop this is hidden. -->
             <button id="sbsScrollModeBtn">&#8660; Scroll mode: tap to drag-zoom</button>
 
-            <!-- 2-column × 2-row grid of spectrogram panels -->
+            <!-- 2-column × 3-row grid of spectrogram panels -->
             <div id="sbsPanelsRow">
 
               <div class="sbs-panel" data-window="rectangular">
@@ -368,6 +369,18 @@
 
               <div class="sbs-panel" data-window="blackman">
                 <div class="sbs-panel-title">Blackman</div>
+                <div class="sbs-panel-scroll">
+                  <div class="sbs-panel-inner">
+                    <canvas class="sbs-canvas"></canvas>
+                    <canvas class="sbs-cursor-canvas"></canvas>
+                    <canvas class="sbs-zoom-canvas"></canvas>
+                    <button class="sbs-reset-btn hidden" title="Double-tap to reset zoom">&#8862; Reset</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="sbs-panel" data-window="bartlett">
+                <div class="sbs-panel-title">Bartlett</div>
                 <div class="sbs-panel-scroll">
                   <div class="sbs-panel-inner">
                     <canvas class="sbs-canvas"></canvas>
